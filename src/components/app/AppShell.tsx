@@ -1,6 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
-  Bell,
   Boxes,
   Cpu,
   FileText,
@@ -19,12 +18,6 @@ import { Button } from "@/components/ui/button";
 import { ProteinMark } from "./ProteinMark";
 import { Input } from "@/components/ui/input";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
@@ -37,14 +30,6 @@ const NAV = [
   { to: "/documentation", label: "Documentation", icon: FileText },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
-
-function DemoBadge() {
-  return (
-    <span className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 font-mono text-[10px] font-medium tracking-[0.12em] text-warning">
-      DEMO MODE · SIMULATED DATA
-    </span>
-  );
-}
 
 function Breadcrumbs() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -170,31 +155,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                 className="h-8 w-44 bg-surface pl-8 text-xs lg:w-64"
               />
             </div>
-            <DemoBadge />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label="Notifications" className="relative">
-                  <Bell className="size-4" />
-                  <span className="absolute right-2 top-2 size-1.5 rounded-full bg-accent" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-80">
-                <DropdownMenuLabel>Notifications (simulated)</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="flex-col items-start gap-0.5">
-                  <span className="text-xs font-medium">Auditor flagged 3 rankings</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    EXP-1044 · differences inside reported uncertainty
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuItem className="flex-col items-start gap-0.5">
-                  <span className="text-xs font-medium">EXP-1045 failed at generation 3</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    Simulated sampling worker unreachable
-                  </span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
           </div>
         </header>
 

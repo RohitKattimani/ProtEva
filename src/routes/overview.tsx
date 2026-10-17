@@ -24,7 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { actorLabel, formatTime } from "@/lib/protein/format";
+import { actorLabel, experimentProgressLabel, formatTime } from "@/lib/protein/format";
 import { useExperimentEvents, useExperiments } from "@/lib/protein/hooks";
 
 export const Route = createFileRoute("/overview")({
@@ -237,7 +237,7 @@ function Overview() {
                       <StatusBadge status={experiment.status} />
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums">
-                      {experiment.currentGeneration}/{experiment.config.generations}
+                      {experimentProgressLabel(experiment)}
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums">
                       {experiment.candidateCount}

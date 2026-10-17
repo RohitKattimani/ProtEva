@@ -147,3 +147,80 @@ class AgentEvent(Schema):
 class ApiError(Schema):
     code: str
     message: str
+
+
+class ProcurementProductType(str, Enum):
+    catalog_protein = "catalog_protein"
+    custom_protein = "custom_protein"
+    synthetic_peptide = "synthetic_peptide"
+    gene_synthesis = "gene_synthesis"
+    best_available = "best_available"
+
+
+class ProcurementSpecification(Schema):
+    product_type: ProcurementProductType = Field(alias="productType")
+    quantity: Optional[str] = None
+    purity: Optional[str] = None
+    expression_system: Optional[str] = Field(default=None, alias="expressionSystem")
+    construct: Optional[str] = None
+    tag: Optional[str] = None
+    modification: Optional[str] = None
+    formulation: Optional[str] = None
+    destination_region: Optional[str] = Field(default=None, alias="destinationRegion")
+    budget_limit: Optional[str] = Field(default=None, alias="budgetLimit")
+    delivery_timeframe: Optional[str] = Field(default=None, alias="deliveryTimeframe")
+    consent_to_share_sequence: bool = Field(default=False, alias="consentToShareSequence")
+
+
+class ProcurementRequestCreate(Schema):
+    experiment_id: str = Field(alias="experimentId")
+    candidate_id: str = Field(alias="candidateId")
+    specification: ProcurementSpecification
+
+
+class ProcurementMatchType(str, Enum):
+    exact_sequence = "exact_sequence"
+    exact_catalog_identity = "exact_catalog_identity"
+    similar_homolog = "similar_homolog"
+    custom_service = "custom_service"
+    no_verified_match = "no_verified_match"
+
+
+class SupplierOption(Schema):
+    supplier: str
+    product_name: str = Field(alias="productName")
+    sku: Optional[str] = None
+    category: str
+    official_url: Optional[str] = Field(default=None, alias="officialUrl")
+    specifications: dict[str, Any] = Field(default_factory=dict)
+    availability: Optional[str] = None
+    quantity_options: Optional[list[str]] = Field(default=None, alias="quantityOptions")
+    price: Optional[float] = None
+    currency: Optional[str] = None
+    quote_valid_until: Optional[str] = Field(default=None, alias="quoteValidUntil")
+    estimated_delivery: Optional[str] = Field(default=None, alias="estimatedDelivery")
+    required_account: Optional[str] = Field(default=None, alias="requiredAccount")
+    match_type: ProcurementMatchType = Field(alias="matchType")
+    sequence_identity: Optional[float] = Field(default=None, alias="sequenceIdentity")
+    coverage: Optional[float] = None
+    match_evidence: list[str] = Field(default_factory=list, alias="matchEvidence")
+    data_source: str = Field(alias="dataSource")
+    retrieved_at: datetime = Field(alias="retrievedAt")
+    simulated: bool = False
+
+
+class ProcurementRequest(Schema):
+    id: str
+    experiment_id: str = Field(alias="experimentId")
+    candidate_id: str = Field(alias="candidateId")
+    sequence_sha256: str = Field(alias="sequenceSha256")
+    specification: ProcurementSpecification
+    status: str = "created"
+    options: list[SupplierOption] = Field(default_factory=list)
+    selected_option_id: Optional[str] = Field(default=None, alias="selectedOptionId")
+    cart_payload: Optional[dict[str, Any]] = Field(default=None, alias="cartPayload")
+    approval_hash: Optional[str] = Field(default=None, alias="approvalHash")
+    provider_response: Optional[dict[str, Any]] = Field(default=None, alias="providerResponse")
+    error: Optional[dict[str, Any]] = None
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")

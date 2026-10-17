@@ -1,4 +1,4 @@
-import type { AgentId, ExperimentStatus } from "./types";
+import type { AgentId, Experiment, ExperimentStatus } from "./types";
 
 export const STATUS_LABEL: Record<ExperimentStatus, string> = {
   queued: "Queued",
@@ -65,4 +65,23 @@ export function downloadTextFile(filename: string, content: string, mime = "text
 export function toFasta(header: string, sequence: string) {
   const lines = sequence.match(/.{1,60}/g) ?? [];
   return `>${header}\n${lines.join("\n")}\n`;
+}
+
+export function experimentProgressLabel(experiment: Experiment) {
+  if (experiment.executionMode === "live") {
+    if (experiment.candidateCount > 0) {
+      return `Candidate screening · ${experiment.candidateCount} recorded`;
+    }
+    return "Preparing candidate screening";
+  }
+  return `Generation ${experiment.currentGeneration} / ${experiment.config.generations}`;
+}
+
+export function candidateLabel(candidate: { id: string; generation: number; mutations: string[] }) {
+  const match = /^cand-g(\d+)-(\d+)$/.exec(candidate.id);
+  const ordinal = match ? Number(match[2]) + 1 : undefined;
+  const mutation = candidate.mutations.length ? candidate.mutations.join(", ") : "seed sequence";
+  return ordinal == null
+    ? `${candidate.id} · ${mutation}`
+    : `Candidate G${candidate.generation} #${ordinal} · ${mutation}`;
 }

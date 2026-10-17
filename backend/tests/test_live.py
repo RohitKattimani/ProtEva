@@ -26,7 +26,7 @@ def test_missing_credential_is_explicit_and_persisted(tmp_path):
 
 
 def test_allowlist_has_no_dynamic_execution_surface():
-    assert set(ALLOWED_TOOLS) == {"validate_landscape", "generate_candidates", "score_candidate_batch", "rescore_finalists", "get_candidate_metrics", "record_audit_result", "export_experiment_report"}
+    assert set(ALLOWED_TOOLS) == {"validate_landscape", "generate_candidates", "score_candidate_batch", "rescore_finalists", "get_candidate_metrics", "record_audit_result", "export_experiment_report", "procurement_search", "prepare_procurement_cart"}
     with pytest.raises(LiveWorkflowError):
         GemmaFunctionClient(Settings(google_api_key=None)).request_tool("Landscape Interpreter", {}, "validate_landscape")
 
@@ -152,6 +152,33 @@ def test_report_only_recovery_uses_persisted_evidence_and_is_idempotent(tmp_path
     assert repo.reporting_attempts(item.id)[-1]["status"]=="completed"
 
 
+def test_resume_after_scoring_reuses_persisted_candidates_without_rescoring(tmp_path, monkeypatch):
+    repo=SQLiteExperimentRepository(str(tmp_path/"resume.sqlite3")); item=experiment(); item.status=ExperimentStatus.failed; repo.add(item)
+    candidates=[]
+    for index in range(2):
+        candidates.append(Candidate(
+            id=f"candidate-{index}", experimentId=item.id, sequence="AC", targetMeanNll=1.2,
+            offTargetMeanNll=1.1, targetPreference=-0.1,
+            seedMetrics=[{"seed":seed,"value":-0.1,"coverage":2} for seed in (17,23,41)],
+        ))
+    repo.add_candidates(candidates)
+    class ResumingGemma:
+        def request_tool(self, role, state, expected_tool, max_attempts=1):
+            assert role=="Scientific Auditor" and expected_tool=="record_audit_result"
+            return {"name":expected_tool,"args":{},"attempts":[{"attempt":1,"status":"success"}]}
+        def request_report_narrative(self, state, max_attempts=1):
+            return {"narrative":{"summary":"Persisted evidence summarized.","limitations":["Proxy only"]},"model":"test-model","attempts":[{"attempt":1,"status":"success"}]}
+    workflow=LiveWorkflow(repo,Settings(database_path=str(tmp_path/"resume.sqlite3"),google_api_key="test",proteinmpnn_artifacts=str(tmp_path/"artifacts"),prepared_structures=str(tmp_path/"structures")),ResumingGemma())
+    monkeypatch.setattr(workflow,"_generate_candidates",lambda *_: (_ for _ in ()).throw(AssertionError("GA reran")))
+    monkeypatch.setattr(workflow,"_score",lambda *_: (_ for _ in ()).throw(AssertionError("ProteinMPNN reran")))
+    workflow.resume_after_scoring(item.id)
+    stored=repo.get(item.id)
+    assert stored.status is ExperimentStatus.completed
+    assert stored.reporting_status is ReportingStatus.completed
+    assert all(record.audit for record in repo.candidates(item.id))
+    assert any(event.kind=="audit" and event.payload["resumedFromPersistedScoring"] for event in repo.events(item.id))
+
+
 def test_report_retry_preserves_evidence_when_narrative_fails(tmp_path):
     repo=SQLiteExperimentRepository(str(tmp_path/"failed-report.sqlite3")); item=experiment(); _seed_reportable_experiment(repo,item)
     class BrokenGemma:
@@ -214,8 +241,8 @@ def test_exhausted_transient_retries_are_bounded_and_redact_key(monkeypatch):
     client=GemmaFunctionClient(Settings(google_api_key="APIKEY-SHOULD-REDACT"))
     with pytest.raises(LiveWorkflowError,match="status=500") as captured:
         client.request_tool("Report Agent",{},"export_experiment_report",max_attempts=99)
-    assert models.calls==3
-    assert len(captured.value.attempts)==3
+    assert models.calls==5
+    assert len(captured.value.attempts)==5
     assert all(item["requestId"]=="req-500" for item in captured.value.attempts)
     assert "APIKEY-SHOULD-REDACT" not in str(captured.value)
 
@@ -253,8 +280,8 @@ def test_reporting_retry_stops_at_total_deadline(monkeypatch):
         def __init__(self, **kwargs): self.models=models
     monkeypatch.setattr(google.genai,"Client",FakeClient)
     monkeypatch.setattr("proteva_api.live.time.monotonic",lambda:clock["now"])
-    monkeypatch.setattr("proteva_api.live.time.sleep",lambda delay:clock.update(now=31.0))
-    with pytest.raises(LiveWorkflowError,match="30-second reporting deadline") as captured:
+    monkeypatch.setattr("proteva_api.live.time.sleep",lambda delay:clock.update(now=76.0))
+    with pytest.raises(LiveWorkflowError,match="75-second workflow deadline") as captured:
         GemmaFunctionClient(Settings(google_api_key="test-key")).request_tool("Report Agent",{},"export_experiment_report",max_attempts=3)
     assert models.calls==1
     assert len(captured.value.attempts)==1

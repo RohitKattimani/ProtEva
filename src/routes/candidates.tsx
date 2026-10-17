@@ -25,6 +25,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useCandidates, useExperiments } from "@/lib/protein/hooks";
+import { candidateLabel } from "@/lib/protein/format";
 import type { Candidate, CandidateQuery } from "@/lib/protein/types";
 
 export const Route = createFileRoute("/candidates")({
@@ -195,7 +196,7 @@ function CandidateLibrary() {
                       className="cursor-pointer"
                       onClick={() => setSelected(candidate)}
                     >
-                      <TableCell className="font-mono text-xs">{candidate.id}</TableCell>
+                      <TableCell className="font-mono text-xs">{candidateLabel(candidate)}</TableCell>
                       <TableCell className="font-mono text-[11px] text-muted-foreground">
                         {candidate.parentId ?? "wild-type"}
                       </TableCell>

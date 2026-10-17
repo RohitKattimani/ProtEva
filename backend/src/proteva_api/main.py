@@ -11,16 +11,18 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from pathlib import Path
 
+from .procurement import ProcurementWorkflow
 from .repository import SQLiteExperimentRepository
-from .schemas import ApiError, ExecutionMode, Experiment, ExperimentCreate, ExperimentStatus
+from .schemas import ApiError, ExecutionMode, Experiment, ExperimentCreate, ExperimentStatus, ProcurementRequest, ProcurementRequestCreate, ProcurementSpecification
 from .settings import get_settings
 from .live import LiveWorkflow, start_workflow
 
 settings = get_settings()
 repository = SQLiteExperimentRepository(settings.database_path)
 workflow = LiveWorkflow(repository, settings)
+procurement = ProcurementWorkflow(repository, settings)
 app = FastAPI(title="ProtEva API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000","http://127.0.0.1:3000","http://localhost:5173","http://127.0.0.1:5173"], allow_methods=["GET","POST"], allow_headers=["content-type"])
+app.add_middleware(CORSMiddleware, allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?", allow_methods=["GET","POST"], allow_headers=["content-type"])
 router = APIRouter(prefix="/api/v1")
 
 
@@ -164,6 +166,18 @@ def recover_report(experiment_id: str, request: Request):
     return repository.get(experiment_id)
 
 
+@router.post("/experiments/{experiment_id}/resume-after-scoring", response_model=Experiment)
+def resume_after_scoring(experiment_id: str, request: Request):
+    _require_local_reporting_access(request)
+    if repository.get(experiment_id) is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    try:
+        workflow.resume_after_scoring(experiment_id)
+    except Exception as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return repository.get(experiment_id)
+
+
 @router.get("/experiments/{experiment_id}/report-attempts", response_model=list)
 def report_attempts(experiment_id: str, request: Request):
     _require_local_reporting_access(request)
@@ -176,6 +190,83 @@ def export_experiment(experiment_id: str):
     experiment = repository.get(experiment_id)
     if experiment is None: raise HTTPException(status_code=404, detail="Experiment not found")
     return {"experiment": experiment, "candidates": repository.candidates(experiment_id), "events": repository.events(experiment_id), "artifacts": repository.artifacts(experiment_id)}
+
+
+@router.post("/experiments/{experiment_id}/procurement/requests", response_model=ProcurementRequest, status_code=201)
+def create_procurement_request(experiment_id: str, request: ProcurementRequestCreate, http_request: Request):
+    _require_local_reporting_access(http_request)
+    if repository.get(experiment_id) is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if request.experiment_id != experiment_id:
+        raise HTTPException(status_code=422, detail="Experiment id mismatch")
+    experiment = repository.get(experiment_id)
+    candidate = repository.candidate(experiment_id, request.candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    try:
+        result = procurement.create_request(experiment_id, request.candidate_id, request.specification)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return result
+
+
+@router.get("/experiments/{experiment_id}/procurement/requests", response_model=list[ProcurementRequest])
+def list_procurement_requests(experiment_id: str, http_request: Request):
+    _require_local_reporting_access(http_request)
+    if repository.get(experiment_id) is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return procurement.repository.list_procurement_requests(experiment_id)
+
+
+@router.get("/experiments/{experiment_id}/procurement/requests/{request_id}", response_model=ProcurementRequest)
+def get_procurement_request(experiment_id: str, request_id: str, http_request: Request):
+    _require_local_reporting_access(http_request)
+    result = procurement.repository.get_procurement_request(request_id)
+    if result is None or result.experiment_id != experiment_id:
+        raise HTTPException(status_code=404, detail="Procurement request not found")
+    return result
+
+
+@router.post("/experiments/{experiment_id}/procurement/requests/{request_id}/search")
+def search_procurement(request_id: str, experiment_id: str, http_request: Request):
+    _require_local_reporting_access(http_request)
+    try:
+        result = procurement.search(request_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {
+        "request": result["request"],
+        "adapterStatuses": result["adapterStatuses"],
+        "externalRoutes": result["externalRoutes"],
+        "demo": result["demo"],
+    }
+
+
+@router.post("/experiments/{experiment_id}/procurement/requests/{request_id}/prepare-cart", response_model=ProcurementRequest)
+def prepare_procurement_cart(experiment_id: str, request_id: str, payload: dict, http_request: Request):
+    _require_local_reporting_access(http_request)
+    option_id = payload.get("optionId") or payload.get("option_id")
+    if not isinstance(option_id, str):
+        raise HTTPException(status_code=422, detail="optionId is required")
+    try:
+        result = procurement.prepare_cart(request_id, option_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return result
+
+
+@router.post("/experiments/{experiment_id}/procurement/requests/{request_id}/approve", response_model=ProcurementRequest)
+def approve_procurement_cart(experiment_id: str, request_id: str, payload: dict, http_request: Request):
+    _require_local_reporting_access(http_request)
+    approval_hash = payload.get("approvalHash") or payload.get("approval_hash")
+    consent = bool(payload.get("consent", False))
+    if not isinstance(approval_hash, str):
+        raise HTTPException(status_code=422, detail="approvalHash is required")
+    try:
+        result = procurement.approve_and_add(request_id, approval_hash, consent)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return result
 
 
 app.include_router(router)

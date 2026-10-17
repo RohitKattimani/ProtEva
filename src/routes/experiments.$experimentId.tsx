@@ -29,7 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api } from "@/lib/protein/api";
-import { STATUS_PIPELINE, downloadTextFile, formatDate, toFasta } from "@/lib/protein/format";
+import { STATUS_PIPELINE, candidateLabel, downloadTextFile, experimentProgressLabel, formatDate, toFasta } from "@/lib/protein/format";
 import {
   useArtifacts,
   useCandidates,
@@ -131,6 +131,11 @@ function ExperimentWorkspace() {
                 Retry reporting
               </Button>
             )}
+            {experiment.executionMode === "live" && experiment.status === "failed" && api.resumeAfterScoring && (
+              <Button variant="outline" onClick={async () => { try { await api.resumeAfterScoring!(experimentId); toast.info("Resumed from persisted ProteinMPNN scores"); } catch (err) { toast.error("Resume failed", { description: (err as Error).message }); } }}>
+                Resume audit
+              </Button>
+            )}
           </>
         }
       />
@@ -141,9 +146,7 @@ function ExperimentWorkspace() {
           <StatusBadge status={experiment.status} />
           <div className="min-w-56 flex-1">
             <div className="mb-1 flex justify-between text-xs text-muted-foreground">
-              <span>
-                Generation {experiment.currentGeneration} / {experiment.config.generations}
-              </span>
+              <span>{experimentProgressLabel(experiment)}</span>
               <span>{progress}%</span>
             </div>
             <Progress value={progress} className="h-1.5" />
@@ -378,7 +381,7 @@ function ExperimentWorkspace() {
                   <span className="text-muted-foreground">
                     {candidate.parentId ?? "wild-type"} →{" "}
                   </span>
-                  <span className="text-primary">{candidate.id}</span>{" "}
+                          <span className="text-primary">{candidateLabel(candidate)}</span>{" "}
                   <span className="text-muted-foreground">
                     [{candidate.mutations.slice(-2).join(", ") || "—"}]
                   </span>
@@ -411,7 +414,7 @@ function ExperimentWorkspace() {
                         className="cursor-pointer"
                         onClick={() => setSelectedCandidate(candidate)}
                       >
-                        <TableCell className="font-mono text-xs">{candidate.id}</TableCell>
+                        <TableCell className="font-mono text-xs">{candidateLabel(candidate)}</TableCell>
                         <TableCell className="font-mono">{candidate.generation}</TableCell>
                         <TableCell className="font-mono text-xs text-primary">
                           {candidate.mutations.slice(-3).join(", ") || "—"}

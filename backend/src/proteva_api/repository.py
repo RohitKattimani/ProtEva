@@ -4,7 +4,7 @@ from contextlib import contextmanager
 import sqlite3
 from typing import Iterator, Optional, Protocol
 
-from .schemas import AgentEvent, Candidate, Experiment
+from .schemas import AgentEvent, Candidate, Experiment, ProcurementRequest
 
 
 class ExperimentRepository(Protocol):
@@ -26,6 +26,7 @@ class SQLiteExperimentRepository:
             connection.execute("CREATE TABLE IF NOT EXISTS candidates (id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, body TEXT NOT NULL)")
             connection.execute("CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, body TEXT NOT NULL)")
             connection.execute("CREATE TABLE IF NOT EXISTS reporting_attempts (id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL)")
+            connection.execute("CREATE TABLE IF NOT EXISTS procurement_requests (id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL, candidate_id TEXT NOT NULL, created_at TEXT NOT NULL, body TEXT NOT NULL)")
             connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS one_running_report_per_experiment ON reporting_attempts(experiment_id) WHERE status = 'running'")
 
     @contextmanager
@@ -120,3 +121,21 @@ class SQLiteExperimentRepository:
         with self._connect() as connection:
             rows = connection.execute("SELECT body FROM reporting_attempts WHERE experiment_id = ? ORDER BY id", (experiment_id,)).fetchall()
         return [json.loads(row["body"]) for row in rows]
+
+    def add_procurement_request(self, request: ProcurementRequest) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT OR REPLACE INTO procurement_requests(id, experiment_id, candidate_id, created_at, body) VALUES (?, ?, ?, ?, ?)", (request.id, request.experiment_id, request.candidate_id, request.created_at.isoformat(), request.model_dump_json(by_alias=True)))
+
+    def get_procurement_request(self, request_id: str) -> Optional[ProcurementRequest]:
+        with self._connect() as connection:
+            row = connection.execute("SELECT body FROM procurement_requests WHERE id = ?", (request_id,)).fetchone()
+        return ProcurementRequest.model_validate_json(row["body"]) if row else None
+
+    def list_procurement_requests(self, experiment_id: str) -> list[ProcurementRequest]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT body FROM procurement_requests WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)).fetchall()
+        return [ProcurementRequest.model_validate_json(row["body"]) for row in rows]
+
+    def replace_procurement_request(self, request: ProcurementRequest) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE procurement_requests SET body = ? WHERE id = ?", (request.model_dump_json(by_alias=True), request.id))

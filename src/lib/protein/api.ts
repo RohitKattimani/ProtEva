@@ -15,6 +15,8 @@ import type {
   CandidateQuery,
   Experiment,
   ExperimentStatus,
+  ProcurementRequest,
+  ProcurementSpecification,
   ProtEvaApi,
   SearchConfig,
   SequenceInput,
@@ -226,7 +228,7 @@ export class MockApiClient implements ProtEvaApi {
       return JSON.stringify(
         {
           disclaimer:
-            "DEMO MODE — simulated data. No BioEmu sampling, Gemma execution or scientific validation occurred.",
+            "Simulated demonstration data. No BioEmu sampling, Gemma execution or scientific validation occurred.",
           userInputs: experiment.input,
           recordedSettings: { target: experiment.target, config: experiment.config },
           actualMeasurements: null,
@@ -256,7 +258,7 @@ export class MockApiClient implements ProtEvaApi {
     return [
       `# ProtEva report — ${experiment.name}`,
       "",
-      "> **DEMO MODE · SIMULATED DATA.** No BioEmu sampling, Gemma execution or scientific validation occurred.",
+      "> **Prototype result.** No BioEmu sampling, Gemma execution or scientific validation occurred.",
       "",
       "## 1. User inputs",
       `- Experiment: ${experiment.name} (${experiment.id})`,
@@ -393,6 +395,26 @@ export class HttpApiClient implements ProtEvaApi {
     return JSON.stringify(await this.request(`/experiments/${encodeURIComponent(id)}/export`), null, 2);
   }
   async recoverReport(id: string) { return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}/reports/recover`, { method:"POST" })); }
+  async resumeAfterScoring(id: string) { return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}/resume-after-scoring`, { method:"POST" })); }
+  async createProcurementRequest(input: { experimentId: string; candidateId: string; specification: ProcurementSpecification }) {
+    const raw=await this.request<any>(`/experiments/${encodeURIComponent(input.experimentId)}/procurement/requests`, { method:"POST", body: JSON.stringify({ experimentId: input.experimentId, candidateId: input.candidateId, specification: input.specification }) });
+    return raw as ProcurementRequest;
+  }
+  async listProcurementRequests(experimentId: string) {
+    return await this.request<any[]>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests`);
+  }
+  async getProcurementRequest(experimentId: string, requestId: string) {
+    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}`);
+  }
+  async searchProcurement(experimentId: string, requestId: string) {
+    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/search`, { method:"POST" });
+  }
+  async prepareProcurementCart(experimentId: string, requestId: string, optionId: string) {
+    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/prepare-cart`, { method:"POST", body: JSON.stringify({ optionId }) });
+  }
+  async approveProcurementCart(experimentId: string, requestId: string, approvalHash: string, consent: boolean) {
+    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/approve`, { method:"POST", body: JSON.stringify({ approvalHash, consent }) });
+  }
   async downloadArtifact(experimentId: string, artifactId: string) {
     const path=`/experiments/${encodeURIComponent(experimentId)}/artifacts/${encodeURIComponent(artifactId)}/download`;
     const response=await fetch(`${this.baseUrl}${path}`);

@@ -175,6 +175,68 @@ export interface CandidateQuery {
   search?: string;
 }
 
+export type ProcurementProductType =
+  | "catalog_protein"
+  | "custom_protein"
+  | "synthetic_peptide"
+  | "gene_synthesis"
+  | "best_available";
+
+export interface ProcurementSpecification {
+  productType: ProcurementProductType;
+  quantity?: string;
+  purity?: string;
+  expressionSystem?: string;
+  construct?: string;
+  tag?: string;
+  modification?: string;
+  formulation?: string;
+  destinationRegion?: string;
+  budgetLimit?: string;
+  deliveryTimeframe?: string;
+  consentToShareSequence?: boolean;
+}
+
+export interface SupplierOption {
+  supplier: string;
+  productName: string;
+  sku?: string;
+  category: string;
+  officialUrl?: string;
+  specifications: Record<string, unknown>;
+  availability?: string;
+  quantityOptions?: string[];
+  price?: number;
+  currency?: string;
+  quoteValidUntil?: string;
+  estimatedDelivery?: string;
+  requiredAccount?: string;
+  matchType: "exact_sequence" | "exact_catalog_identity" | "similar_homolog" | "custom_service" | "no_verified_match";
+  sequenceIdentity?: number;
+  coverage?: number;
+  matchEvidence: string[];
+  dataSource: string;
+  retrievedAt: string;
+  simulated?: boolean;
+}
+
+export interface ProcurementRequest {
+  id: string;
+  experimentId: string;
+  candidateId: string;
+  sequenceSha256: string;
+  specification: ProcurementSpecification;
+  status: string;
+  options: SupplierOption[];
+  selectedOptionId?: string;
+  cartPayload?: Record<string, unknown>;
+  approvalHash?: string;
+  providerResponse?: Record<string, unknown>;
+  error?: { code?: string; message?: string } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProtEvaApi {
   createExperiment(draft: {
     input: SequenceInput;
@@ -191,5 +253,21 @@ export interface ProtEvaApi {
   cancelExperiment(id: string): Promise<Experiment>;
   exportExperiment(id: string, format: "markdown" | "json"): Promise<string>;
   recoverReport?(id: string): Promise<Experiment>;
+  resumeAfterScoring?(id: string): Promise<Experiment>;
   downloadArtifact?(experimentId: string, artifactId: string): Promise<Blob>;
+  createProcurementRequest?(input: {
+    experimentId: string;
+    candidateId: string;
+    specification: ProcurementSpecification;
+  }): Promise<ProcurementRequest>;
+  listProcurementRequests?(experimentId: string): Promise<ProcurementRequest[]>;
+  getProcurementRequest?(experimentId: string, requestId: string): Promise<ProcurementRequest>;
+  searchProcurement?(experimentId: string, requestId: string): Promise<{
+    request: ProcurementRequest;
+    adapterStatuses: Array<Record<string, unknown>>;
+    externalRoutes: Array<Record<string, string>>;
+    demo: boolean;
+  }>;
+  prepareProcurementCart?(experimentId: string, requestId: string, optionId: string): Promise<ProcurementRequest>;
+  approveProcurementCart?(experimentId: string, requestId: string, approvalHash: string, consent: boolean): Promise<ProcurementRequest>;
 }

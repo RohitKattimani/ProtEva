@@ -27,8 +27,9 @@ ROLE_INSTRUCTIONS = {
     "Ensemble Analysis Worker": "Run deterministic, allowlisted scientific tools and report only measured results. Do not infer metrics.",
     "Scientific Auditor": "Review recorded NLL, mappings, seeds, and limitations. Use record_audit_result only.",
     "Report Agent": "Write a concise, evidence-grounded narrative only from the supplied recorded evidence. Do not invent measurements or recommendations.",
+    "Procurement Agent": "Compare only retrieved supplier results, explain match types, and prepare reviewable quote or cart operations. Do not invent products, prices, availability, or supplier authorization.",
 }
-ALLOWED_TOOLS = ("validate_landscape", "generate_candidates", "score_candidate_batch", "rescore_finalists", "get_candidate_metrics", "record_audit_result", "export_experiment_report")
+ALLOWED_TOOLS = ("validate_landscape", "generate_candidates", "score_candidate_batch", "rescore_finalists", "get_candidate_metrics", "record_audit_result", "export_experiment_report", "procurement_search", "prepare_procurement_cart")
 
 
 class LiveWorkflowError(RuntimeError):
@@ -65,34 +66,47 @@ class GemmaFunctionClient:
         return {"status":code,"code":nested.get("status") if isinstance(nested.get("status"),str) else None,"message":message[:500],"requestId":request_id,"category":category}
 
     def request_tool(self, role: str, context: dict[str, Any], expected_tool: str, max_attempts: int = 1) -> dict[str, Any]:
-        max_attempts=min(max(1,max_attempts),3)
+        """Request exactly one allowed tool from Gemma.
+
+        Gemma's hosted endpoint is less reliable when it receives a large registry of
+        unrelated function declarations.  Each workflow transition already has one
+        authorized next action, so sending only that declaration is both narrower and
+        matches the dispatcher contract.
+        """
+        max_attempts=min(max(1,max_attempts),5)
         if not self.settings.google_api_key:
             raise LiveWorkflowError("PROTEVA_GOOGLE_API_KEY is not configured; live Gemma execution cannot start")
         if expected_tool not in ALLOWED_TOOLS: raise LiveWorkflowError("The requested tool is not allowlisted")
         from google import genai
         from google.genai import types
         import httpx
-        declarations=[]
-        for name in ALLOWED_TOOLS:
-            schema={"type":"object","properties":{},"additionalProperties":False}
-            if name == "export_experiment_report":
-                schema={"type":"object","properties":{"summary":{"type":"string","maxLength":600},"limitations":{"type":"array","items":{"type":"string"},"maxItems":8}},"required":["summary","limitations"],"additionalProperties":False}
-            declarations.append(types.FunctionDeclaration(name=name,description="ProtEva allowlisted tool: "+name,parameters_json_schema=schema))
+        schema={"type":"object","properties":{},"additionalProperties":False}
+        if expected_tool == "export_experiment_report":
+            schema={"type":"object","properties":{"summary":{"type":"string","maxLength":600},"limitations":{"type":"array","items":{"type":"string"},"maxItems":8}},"required":["summary","limitations"],"additionalProperties":False}
+        declaration=types.FunctionDeclaration(
+            name=expected_tool,
+            description="ProtEva allowlisted tool: "+expected_tool,
+            parameters_json_schema=schema,
+        )
         client=genai.Client(api_key=self.settings.google_api_key, http_options=types.HttpOptions(client_args={"trust_env": True}))
-        started=time.monotonic(); attempts=[]; deadline=started+30.0
+        started=time.monotonic(); attempts=[]; deadline=started+75.0
         for attempt in range(1,max_attempts+1):
             remaining_seconds=deadline-time.monotonic()
             if remaining_seconds <= 0:
-                failure=LiveWorkflowError("Gemma provider request exceeded the 30-second reporting deadline after %s provider attempt(s)"%len(attempts))
+                failure=LiveWorkflowError("Gemma provider request exceeded the 75-second workflow deadline after %s provider attempt(s)"%len(attempts))
                 failure.attempts=attempts
                 raise failure
             try:
                 remaining=max(1,int(remaining_seconds*1000))
                 response=client.models.generate_content(
                     model=self.settings.gemma_model,
-                    contents=json.dumps({"role":role,"instruction":ROLE_INSTRUCTIONS[role],"recorded_state":context,"required_next_tool":expected_tool}),
+                    contents=(
+                        f"You are the ProtEva {role}. {ROLE_INSTRUCTIONS[role]}\n"
+                        f"Recorded state: {json.dumps(context, separators=(',', ':'))}\n"
+                        f"Return the required function call: {expected_tool}."
+                    ),
                     config=types.GenerateContentConfig(
-                        tools=[types.Tool(function_declarations=declarations)],
+                        tools=[types.Tool(function_declarations=[declaration])],
                         tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode=types.FunctionCallingConfigMode.ANY,allowed_function_names=[expected_tool])),
                         temperature=0,
                         max_output_tokens=256 if expected_tool=="export_experiment_report" else 128,
@@ -108,7 +122,7 @@ class GemmaFunctionClient:
                         raise LiveWorkflowError("Report Agent returned invalid narrative fields")
                 elif args:
                     raise LiveWorkflowError("Gemma returned arguments not allowed by the selected tool schema")
-                attempts.append({"attempt":attempt,"status":"success","elapsedSeconds":round(time.monotonic()-started,3)})
+                attempts.append({"attempt":attempt,"status":"success","model":self.settings.gemma_model,"elapsedSeconds":round(time.monotonic()-started,3)})
                 return {"name":calls[0].name,"args":args,"attempts":attempts}
             except Exception as error:
                 metadata=self._error_metadata(error,self.settings.google_api_key)
@@ -118,7 +132,7 @@ class GemmaFunctionClient:
                     failure=LiveWorkflowError("Gemma provider request failed after %s attempt(s): status=%s code=%s message=%s"%(attempt,metadata["status"],metadata["code"],metadata["message"]))
                     failure.attempts=attempts
                     raise failure
-                time.sleep(min(4.0,0.5*(2**(attempt-1))+random.uniform(0,0.25),max(0,deadline-time.monotonic())))
+                time.sleep(min(12.0,1.0*(2**(attempt-1))+random.uniform(0,0.5),max(0,deadline-time.monotonic())))
 
     def request_report_narrative(self, context: dict[str, Any], max_attempts: int = 3) -> dict[str, Any]:
         """Ask Gemma to explain persisted evidence; artifact creation is deterministic."""
@@ -178,7 +192,7 @@ class LiveWorkflow:
     def event(self, experiment: Experiment, kind: str, summary: str, payload: dict[str, Any] | None = None, model_generated: bool = True) -> None:
         self.repository.add_event(AgentEvent(id="evt_" + uuid4().hex, experiment_id=experiment.id, timestamp=now(), kind=kind, summary=summary, payload=payload, provenance=Provenance(origin=EvidenceOrigin.computational, producer="proteva-live-workflow", model_name=self.settings.gemma_model if model_generated else None, generatedAt=now())))
 
-    def invoke_role(self, experiment: Experiment, role: str, state: dict[str, Any], expected_tool: str, max_attempts: int = 3) -> dict[str, Any]:
+    def invoke_role(self, experiment: Experiment, role: str, state: dict[str, Any], expected_tool: str, max_attempts: int = 5) -> dict[str, Any]:
         self.event(experiment, "agent_task", role + " received structured task", {"role": role})
         call = self.model_client.request_tool(role, state, expected_tool, max_attempts)
         self.event(experiment, "tool_request", role + " requested " + call["name"], {"role": role, "tool": call["name"], "arguments": call["args"], "providerAttempts": call.get("attempts", [])})
@@ -217,11 +231,70 @@ class LiveWorkflow:
             audited = [item.model_copy(update={"audit": {"status": "reviewed", "warning": "ProteinMPNN target preference is an unvalidated model proxy; 1AKE is inhibitor-bound."}}) for item in rescored]
             self.repository.add_candidates(audited)
             self.event(experiment, "audit", "auditor recorded proxy limitations and seed sensitivity", {"status": "reviewed"})
-            experiment.status = ExperimentStatus.completed; experiment.current_generation = 0; experiment.candidate_count = len(scored); experiment.requires_review = len(audited); experiment.warnings = ["ProteinMPNN target preference is an experimental compatibility proxy, not biological fitness."]; experiment.reporting_status = ReportingStatus.pending; self.repository.replace(experiment)
+            experiment.status = ExperimentStatus.completed; experiment.current_generation = 1; experiment.candidate_count = len(scored); experiment.requires_review = len(audited); experiment.warnings = ["ProteinMPNN target preference is an experimental compatibility proxy, not biological fitness."]; experiment.reporting_status = ReportingStatus.pending; self.repository.replace(experiment)
             self.event(experiment, "decision", "coordinator completed scientific workflow using recorded tool results")
             self.recover_report(experiment.id)
         except Exception as error:
             experiment.status = ExperimentStatus.failed; experiment.error = {"code": "LIVE_WORKFLOW_FAILED", "message": str(error)}; self.repository.replace(experiment); self.event(experiment, "error", "live workflow failed", {"message": str(error)})
+
+    def resume_after_scoring(self, experiment_id: str) -> None:
+        """Finish the audit/report stages from persisted measurements only.
+
+        This exists for a transient model-service failure after GA and ProteinMPNN
+        completed. It deliberately never invokes candidate generation or scoring.
+        """
+        experiment = self.repository.get(experiment_id)
+        if experiment is None:
+            raise LiveWorkflowError("Experiment not found")
+        if experiment.execution_mode.value != "live":
+            raise LiveWorkflowError("Only live experiments can resume after scoring")
+        candidates = self.repository.candidates(experiment_id)
+        if not candidates or any(
+            candidate.target_mean_nll is None
+            or candidate.off_target_mean_nll is None
+            or candidate.target_preference is None
+            or not candidate.seed_metrics
+            for candidate in candidates
+        ):
+            raise LiveWorkflowError("Persisted ProteinMPNN scores are incomplete; refusing to resume")
+        if any(event.kind == "audit" for event in self.repository.events(experiment_id)):
+            raise LiveWorkflowError("Scientific auditing has already completed")
+        finalists = [candidate for candidate in candidates if len(candidate.seed_metrics) >= 3]
+        if not finalists:
+            raise LiveWorkflowError("Persisted finalist seed-rescoring records are unavailable")
+        try:
+            experiment.status = ExperimentStatus.running
+            experiment.error = None
+            self.repository.replace(experiment)
+            self.invoke_role(
+                experiment,
+                "Scientific Auditor",
+                {"finalists": [item.id for item in finalists], "seeds": [17, 23, 41]},
+                "record_audit_result",
+            )
+            audited = [
+                item.model_copy(
+                    update={"audit": {"status": "reviewed", "warning": "ProteinMPNN target preference is an unvalidated model proxy; 1AKE is inhibitor-bound."}}
+                )
+                for item in finalists
+            ]
+            self.repository.add_candidates(audited)
+            self.event(experiment, "audit", "auditor recorded proxy limitations and seed sensitivity", {"status": "reviewed", "resumedFromPersistedScoring": True})
+            experiment.status = ExperimentStatus.completed
+            experiment.current_generation = 1
+            experiment.candidate_count = len(candidates)
+            experiment.requires_review = len(audited)
+            experiment.warnings = ["ProteinMPNN target preference is an experimental compatibility proxy, not biological fitness."]
+            experiment.reporting_status = ReportingStatus.pending
+            self.repository.replace(experiment)
+            self.event(experiment, "decision", "coordinator completed audit from persisted scoring results", {"resumedFromPersistedScoring": True})
+            self.recover_report(experiment.id)
+        except Exception as error:
+            experiment = self.repository.get(experiment_id) or experiment
+            experiment.status = ExperimentStatus.failed
+            experiment.error = {"code": "LIVE_RESUME_FAILED", "message": str(error)}
+            self.repository.replace(experiment)
+            self.event(experiment, "error", "live workflow resume failed", {"message": str(error)})
 
 
     def _build_evidence_report(self, experiment_id: str, attempt_id: str) -> dict[str, Any]:
@@ -231,7 +304,8 @@ class LiveWorkflow:
             raise LiveWorkflowError("Evidence reports require completed scientific execution")
         audit_events=[event for event in self.repository.events(experiment_id) if event.kind=="audit"]
         candidates=self.repository.candidates(experiment_id)
-        if not audit_events or not candidates or any(candidate.target_mean_nll is None or candidate.off_target_mean_nll is None or candidate.target_preference is None or not candidate.seed_metrics or not candidate.audit for candidate in candidates):
+        audited_candidates=[candidate for candidate in candidates if candidate.audit]
+        if not audit_events or not candidates or not audited_candidates or any(candidate.target_mean_nll is None or candidate.off_target_mean_nll is None or candidate.target_preference is None or not candidate.seed_metrics for candidate in candidates):
             raise LiveWorkflowError("Persisted scientific measurements and audit are required before report recovery")
         builder=EvidenceReportBuilder(self.repository,Path(self.settings.proteinmpnn_artifacts),Path(self.settings.prepared_structures))
         record,path,checksum=builder.build(experiment_id,attempt_id)
