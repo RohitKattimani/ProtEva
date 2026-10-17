@@ -51,12 +51,12 @@ describe("HttpApiClient", () => {
     );
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "https://api.example.test/api/v1/experiments/exp%2Fa%20b",
-      "https://api.example.test/api/v1/candidates?experimentId=exp%2Fa+b&generation=3&search=A42V",
+      "https://api.example.test/api/v1/experiments/exp%2Fa%20b/candidates",
     ]);
   });
 
   it("sends JSON POST requests with the complete draft payload", async () => {
-    const response = { id: "EXP-1", name: "HTTP contract" } as Experiment;
+    const response = { id: "EXP-1", name: "HTTP contract", executionMode: "live", status: "queued", createdAt: "2026-01-01T00:00:00Z", input: draft.input, target: draft.target, config: draft.config } as Experiment;
     const fetchMock = installFetch(
       new Response(JSON.stringify(response), {
         status: 201,
@@ -66,13 +66,13 @@ describe("HttpApiClient", () => {
 
     await expect(
       new HttpApiClient("https://api.example.test").createExperiment(draft),
-    ).resolves.toEqual(response);
+    ).resolves.toMatchObject({ ...response, sequence: draft.input.sequence, simulated: false });
 
     const [url, options] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("https://api.example.test/experiments");
     expect(options?.method).toBe("POST");
     expect(new Headers(options?.headers).get("content-type")).toBe("application/json");
-    expect(options?.body).toBe(JSON.stringify(draft));
+    expect(options?.body).toBe(JSON.stringify({ ...draft, executionMode: "demo" }));
   });
 
   it("uses POST for cancellation and JSON headers for every JSON endpoint", async () => {

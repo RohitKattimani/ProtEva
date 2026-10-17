@@ -12,6 +12,8 @@ dependencies = [
   "pydantic==2.12.5",
   "pydantic-settings==2.11.0",
   "uvicorn==0.38.0",
+  "google-genai>=1.0,<2",
+  "numpy>=1.26,<3",
 ]
 
 [project.optional-dependencies]

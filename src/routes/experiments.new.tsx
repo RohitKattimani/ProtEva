@@ -25,7 +25,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { api } from "@/lib/protein/api";
+import { api, isDemoMode } from "@/lib/protein/api";
 import { AMINO_ACIDS, DEFAULT_CONFIG, DEFAULT_TARGET, EXAMPLE_SEQUENCE } from "@/lib/protein/mock-data";
 import type { SearchConfig, SequenceInput, TargetLandscape } from "@/lib/protein/types";
 import { cn } from "@/lib/utils";
@@ -95,6 +95,7 @@ function NewExperiment() {
   const [step, setStep] = useState(0);
   const [launching, setLaunching] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [executionMode, setExecutionMode] = useState<"demo" | "live">("demo");
 
   const [input, setInput] = useState<SequenceInput>({ experimentName: "", sequence: "" });
   const [target, setTarget] = useState<TargetLandscape>({
@@ -158,9 +159,10 @@ function NewExperiment() {
         input: { ...input, sequence: input.sequence.replace(/\s/g, "").toUpperCase() },
         target,
         config,
+        executionMode,
       });
-      toast.success(`Demo run ${experiment.id} queued`, {
-        description: "Simulated pipeline — no sampling job was dispatched.",
+      toast.success(`${executionMode === "live" ? "Live" : "Demo"} run ${experiment.id} queued`, {
+        description: executionMode === "live" ? "The backend will record real status and errors." : "Simulated pipeline — no sampling job was dispatched.",
       });
       void navigate({
         to: "/experiments/$experimentId",
@@ -556,6 +558,20 @@ function NewExperiment() {
                 </div>
               </div>
               <div className="rounded-md border border-border bg-surface p-3">
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Execution mode</p>
+                <div className="mt-2 flex gap-2">
+                  <Button type="button" size="sm" variant={executionMode === "demo" ? "default" : "outline"} onClick={() => setExecutionMode("demo")}>Demo</Button>
+                  <Button type="button" size="sm" variant={executionMode === "live" ? "default" : "outline"} disabled={isDemoMode} onClick={() => setExecutionMode("live")}>Live</Button>
+                </div>
+                <p className="mt-2 text-[11px] text-muted-foreground">{isDemoMode ? "Set VITE_API_BASE_URL to enable the local live backend." : executionMode === "live" ? "Live runs use the prepared 4AKE/1AKE chain-A benchmark. 1AKE is AP5A-bound; target preference is an experimental ProteinMPNN proxy." : "Demo results are simulated."}</p>
+              </div>
+              {executionMode === "live" && (
+                <label className="flex gap-2 rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
+                  <input type="checkbox" checked={Boolean(config.acknowledgeExperimentalProxy)} onChange={(event) => setConfig({ ...config, acknowledgeExperimentalProxy: event.target.checked, enableExperimentalProxySelection: event.target.checked })} />
+                  I acknowledge that target preference is an unvalidated model-based backbone-compatibility proxy, not biological fitness, stability, affinity, or conformational occupancy.
+                </label>
+              )}
+              <div className="rounded-md border border-border bg-surface p-3">
                 <p className="text-xs uppercase tracking-wider text-muted-foreground">
                   Search configuration
                 </p>
@@ -574,9 +590,7 @@ function NewExperiment() {
               <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
                 <p className="font-medium text-warning">Scientific limitations</p>
                 <p className="mt-1">
-                  Computational conformational predictions do not establish biological function,
-                  stability or safety. This run is simulated: no BioEmu sampling and no Gemma agent
-                  execution take place, and all resulting metrics are illustrative.
+                  {executionMode === "live" ? "ProteinMPNN scores are computational compatibility proxies. They do not establish biological function, stability, affinity, free energy or conformational occupancy." : "This run is simulated: no BioEmu sampling and no Gemma agent execution take place, and all resulting metrics are illustrative."}
                 </p>
               </div>
             </div>
@@ -599,8 +613,8 @@ function NewExperiment() {
             Continue <ChevronRight className="size-4" />
           </Button>
         ) : (
-          <Button onClick={launch} disabled={launching}>
-            <Rocket className="size-4" /> {launching ? "Starting…" : "Start demo run"}
+          <Button onClick={launch} disabled={launching || (executionMode === "live" && !config.acknowledgeExperimentalProxy)}>
+            <Rocket className="size-4" /> {launching ? "Starting…" : executionMode === "live" ? "Start live run" : "Start demo run"}
           </Button>
         )}
       </div>

@@ -28,8 +28,17 @@ class ExperimentStatus(str, Enum):
     queued = "queued"
     running = "running"
     completed = "completed"
+    completed_with_warnings = "completed_with_warnings"
     failed = "failed"
     cancelled = "cancelled"
+
+
+class ReportingStatus(str, Enum):
+    not_requested = "not_requested"
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
 
 
 class Provenance(Schema):
@@ -68,6 +77,8 @@ class SearchConfig(Schema):
     mutation_strategy: str = Field(alias="mutationStrategy")
     diversity_preference: int = Field(alias="diversityPreference", ge=0, le=100)
     random_seed: int = Field(alias="randomSeed")
+    enable_experimental_proxy_selection: bool = Field(default=False, alias="enableExperimentalProxySelection")
+    acknowledge_experimental_proxy: bool = Field(default=False, alias="acknowledgeExperimentalProxy")
 
 
 class ExperimentCreate(Schema):
@@ -92,6 +103,9 @@ class Experiment(Schema):
     generation_stats: Optional[list[dict[str, Any]]] = Field(default=None, alias="generationStats")
     warnings: list[str] = Field(default_factory=list)
     provenance: Optional[Provenance] = None
+    error: Optional[dict[str, Any]] = None
+    reporting_status: ReportingStatus = Field(default=ReportingStatus.not_requested, alias="reportingStatus")
+    reporting_error: Optional[dict[str, Any]] = Field(default=None, alias="reportingError")
 
 
 class CandidateMetrics(Schema):
@@ -110,6 +124,14 @@ class Candidate(Schema):
     objective_score: Optional[float] = Field(default=None, alias="objectiveScore")
     metrics: Optional[CandidateMetrics] = None
     provenance: Optional[Provenance] = None
+    generation: int = 0
+    parent_id: Optional[str] = Field(default=None, alias="parentId")
+    mutations: list[str] = Field(default_factory=list)
+    target_mean_nll: Optional[float] = Field(default=None, alias="targetMeanNll")
+    off_target_mean_nll: Optional[float] = Field(default=None, alias="offTargetMeanNll")
+    target_preference: Optional[float] = Field(default=None, alias="targetPreference")
+    seed_metrics: list[dict[str, Any]] = Field(default_factory=list, alias="seedMetrics")
+    audit: Optional[dict[str, Any]] = None
 
 
 class AgentEvent(Schema):

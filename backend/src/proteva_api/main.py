@@ -1,19 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import ipaddress
 from uuid import uuid4
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
+from pathlib import Path
 
 from .repository import SQLiteExperimentRepository
 from .schemas import ApiError, ExecutionMode, Experiment, ExperimentCreate, ExperimentStatus
 from .settings import get_settings
+from .live import LiveWorkflow, start_workflow
 
 settings = get_settings()
 repository = SQLiteExperimentRepository(settings.database_path)
+workflow = LiveWorkflow(repository, settings)
 app = FastAPI(title="ProtEva API", version="0.1.0")
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000","http://127.0.0.1:3000","http://localhost:5173","http://127.0.0.1:5173"], allow_methods=["GET","POST"], allow_headers=["content-type"])
 router = APIRouter(prefix="/api/v1")
 
 
@@ -45,23 +52,20 @@ def ready():
 
 @router.post("/experiments", response_model=Experiment, status_code=201)
 def create_experiment(request: ExperimentCreate):
-    if request.execution_mode is ExecutionMode.live:
-        raise HTTPException(
-            status_code=501,
-            detail="Live execution is not available: no execution mechanism is configured. No experiment was created.",
-        )
     now = datetime.now(timezone.utc)
     experiment = Experiment(
         id=f"exp_{uuid4().hex}",
         name=request.input.experiment_name,
-        execution_mode=ExecutionMode.demo,
-        status=ExperimentStatus.draft,
+        execution_mode=request.execution_mode,
+        status=ExperimentStatus.queued if request.execution_mode is ExecutionMode.live else ExperimentStatus.draft,
         created_at=now,
         input=request.input,
         target=request.target,
         config=request.config,
     )
     repository.add(experiment)
+    if request.execution_mode is ExecutionMode.live:
+        start_workflow(workflow, experiment.id)
     return experiment
 
 
@@ -76,6 +80,102 @@ def get_experiment(experiment_id: str):
     if experiment is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return experiment
+
+
+@router.get("/experiments/{experiment_id}/events", response_model=list)
+def get_events(experiment_id: str):
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    return repository.events(experiment_id)
+
+
+@router.get("/experiments/{experiment_id}/candidates", response_model=list)
+def get_candidates(experiment_id: str):
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    return repository.candidates(experiment_id)
+
+
+@router.get("/experiments/{experiment_id}/candidates/{candidate_id}")
+def get_candidate(experiment_id: str, candidate_id: str):
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    candidate = repository.candidate(experiment_id, candidate_id)
+    if candidate is None: raise HTTPException(status_code=404, detail="Candidate not found")
+    return candidate
+
+
+@router.get("/experiments/{experiment_id}/artifacts", response_model=list)
+def get_artifacts(experiment_id: str):
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    return repository.artifacts(experiment_id)
+
+
+@router.get("/experiments/{experiment_id}/artifacts/{artifact_id}/download")
+def download_artifact(experiment_id: str, artifact_id: str):
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    artifact=next((item for item in repository.artifacts(experiment_id) if item.get("id")==artifact_id),None)
+    if artifact is None: raise HTTPException(status_code=404, detail="Artifact not found")
+    filename=artifact.get("path")
+    if not isinstance(filename,str) or Path(filename).name != filename:
+        raise HTTPException(status_code=404, detail="Artifact is not downloadable")
+    path=Path(settings.proteinmpnn_artifacts)/filename
+    if not path.is_file(): raise HTTPException(status_code=404, detail="Artifact file is unavailable")
+    return FileResponse(path, filename=filename, media_type="application/json" if filename.endswith(".json") else "application/octet-stream")
+
+
+@router.post("/experiments/{experiment_id}/cancel", response_model=Experiment)
+def cancel_experiment(experiment_id: str):
+    experiment = repository.get(experiment_id)
+    if experiment is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    if experiment.status in {ExperimentStatus.completed, ExperimentStatus.completed_with_warnings, ExperimentStatus.failed, ExperimentStatus.cancelled}: raise HTTPException(status_code=409, detail="Experiment is terminal")
+    experiment.status = ExperimentStatus.cancelled; repository.replace(experiment)
+    workflow.event(experiment, "decision", "cancellation recorded; current subprocesses cannot be interrupted safely in this phase")
+    return experiment
+
+
+@router.post("/experiments/{experiment_id}/reports/evidence")
+def build_evidence_report(experiment_id: str, request: Request):
+    _require_local_reporting_access(request)
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    try:
+        result=workflow.build_evidence_report(experiment_id)
+        return {"attemptId":result["attemptId"],"sha256":result["sha256"],"report":result["record"]}
+    except Exception as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+def _require_local_reporting_access(request: Request) -> None:
+    if settings.env != "development":
+        raise HTTPException(status_code=403, detail="Report recovery is available only in local development.")
+    client_host=request.client.host if request.client else ""
+    try:
+        if not ipaddress.ip_address(client_host).is_loopback:
+            raise HTTPException(status_code=403, detail="Report recovery is restricted to loopback clients.")
+    except ValueError as error:
+        raise HTTPException(status_code=403, detail="Report recovery is restricted to loopback clients.") from error
+
+
+@router.post("/experiments/{experiment_id}/reports/recover", response_model=Experiment)
+def recover_report(experiment_id: str, request: Request):
+    _require_local_reporting_access(request)
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    try:
+        workflow.recover_report(experiment_id)
+    except Exception as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return repository.get(experiment_id)
+
+
+@router.get("/experiments/{experiment_id}/report-attempts", response_model=list)
+def report_attempts(experiment_id: str, request: Request):
+    _require_local_reporting_access(request)
+    if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    return repository.reporting_attempts(experiment_id)
+
+
+@router.get("/experiments/{experiment_id}/export")
+def export_experiment(experiment_id: str):
+    experiment = repository.get(experiment_id)
+    if experiment is None: raise HTTPException(status_code=404, detail="Experiment not found")
+    return {"experiment": experiment, "candidates": repository.candidates(experiment_id), "events": repository.events(experiment_id), "artifacts": repository.artifacts(experiment_id)}
 
 
 app.include_router(router)

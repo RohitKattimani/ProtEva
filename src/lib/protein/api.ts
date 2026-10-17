@@ -72,6 +72,7 @@ export class MockApiClient implements ProtEvaApi {
     input: SequenceInput;
     target: TargetLandscape;
     config: SearchConfig;
+    executionMode?: "demo" | "live";
   }): Promise<Experiment> {
     await delay(220);
     const id = `EXP-${1046 + this.experiments.length - 4}`;
@@ -89,6 +90,7 @@ export class MockApiClient implements ProtEvaApi {
       requiresReview: 0,
       generationStats: [],
       warnings: ["Simulated run — no BioEmu sampling or Gemma execution takes place."],
+      executionMode: "demo",
       simulated: true,
     };
     this.experiments = [experiment, ...this.experiments];
@@ -316,46 +318,86 @@ export class HttpApiClient implements ProtEvaApi {
     }
   }
 
-  createExperiment(draft: { input: SequenceInput; target: TargetLandscape; config: SearchConfig }) {
-    return this.request<Experiment>("/experiments", {
+  private experiment(raw: any): Experiment {
+    return {
+      ...raw,
+      sequence: raw.input?.sequence ?? "",
+      currentGeneration: raw.currentGeneration ?? 0,
+      candidateCount: raw.candidateCount ?? 0,
+      requiresReview: raw.requiresReview ?? 0,
+      generationStats: raw.generationStats ?? [],
+      warnings: raw.warnings ?? [],
+      executionMode: raw.executionMode,
+      simulated: raw.executionMode === "demo",
+    } as Experiment;
+  }
+
+  private candidate(raw: any): Candidate {
+    const reviewed = raw.audit?.status === "reviewed";
+    return {
+      ...raw,
+      parentId: raw.parentId ?? null,
+      objectiveScore: raw.targetPreference ?? null,
+      evaluationStatus: raw.targetPreference == null ? "pending" : "evaluated",
+      auditStatus: reviewed ? "confirmed" : "unreviewed",
+      diversityScore: 0,
+      metrics: null,
+      warnings: raw.audit?.warning ? [String(raw.audit.warning)] : [],
+    } as Candidate;
+  }
+
+  private event(raw: any): AgentEvent {
+    return {
+      ...raw,
+      from: "evolution-coordinator",
+      to: "system",
+      kind: raw.kind === "warning" || raw.kind === "error" ? "validation_warning" : raw.kind === "tool_request" ? "tool_call" : raw.kind === "decision" || raw.kind === "coordinator_decision" ? "decision" : raw.kind === "agent_task" ? "delegation" : "result",
+      detail: raw.payload ? JSON.stringify(raw.payload) : undefined,
+    } as AgentEvent;
+  }
+
+  async createExperiment(draft: { input: SequenceInput; target: TargetLandscape; config: SearchConfig; executionMode?: "demo" | "live" }) {
+    const raw=await this.request<unknown>("/experiments", {
       method: "POST",
-      body: JSON.stringify(draft),
+      body: JSON.stringify({ ...draft, executionMode: draft.executionMode ?? "demo" }),
     });
+    return this.experiment(raw);
   }
-  listExperiments() {
-    return this.request<Experiment[]>("/experiments");
+  async listExperiments() {
+    return (await this.request<any[]>("/experiments")).map((item) => this.experiment(item));
   }
-  getExperiment(id: string) {
-    return this.request<Experiment>(`/experiments/${encodeURIComponent(id)}`);
+  async getExperiment(id: string) {
+    return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}`));
   }
-  getExperimentEvents(id: string) {
-    return this.request<AgentEvent[]>(`/experiments/${encodeURIComponent(id)}/events`);
+  async getExperimentEvents(id: string) {
+    return (await this.request<any[]>(`/experiments/${encodeURIComponent(id)}/events`)).map((item) => this.event(item));
   }
-  getCandidates(query: CandidateQuery = {}) {
-    const params = new URLSearchParams(
-      Object.entries(query)
-        .filter(([, value]) => value !== undefined && value !== "")
-        .map(([key, value]) => [key, String(value)]),
-    );
-    const queryString = params.toString();
-    return this.request<Candidate[]>(`/candidates${queryString ? `?${queryString}` : ""}`);
+  async getCandidates(query: CandidateQuery = {}) {
+    if (!query.experimentId) throw new ApiClientError({ message: "Live candidate retrieval requires an experimentId.", path: "/experiments/{id}/candidates", status: 400 });
+    const candidates=(await this.request<any[]>(`/experiments/${encodeURIComponent(query.experimentId)}/candidates`)).map((item) => this.candidate(item));
+    return candidates.filter((item) => (query.generation == null || item.generation === query.generation) && (query.maxMutations == null || item.mutations.length <= query.maxMutations) && (!query.search || item.id.includes(query.search) || item.mutations.join(",").includes(query.search)));
   }
-  getCandidate(id: string) {
-    return this.request<Candidate>(`/candidates/${encodeURIComponent(id)}`);
+  async getCandidate(id: string) {
+    throw new ApiClientError({ message: "Live candidate detail requires its experiment context.", path: `/candidates/${encodeURIComponent(id)}`, status: 400 });
   }
-  getArtifacts(experimentId: string) {
-    return this.request<Artifact[]>(`/experiments/${encodeURIComponent(experimentId)}/artifacts`);
+  async getArtifacts(experimentId: string) {
+    const raw=await this.request<any[]>(`/experiments/${encodeURIComponent(experimentId)}/artifacts`);
+    return raw.map((item) => ({ id:item.id, experimentId, kind:item.kind ?? "report", name:item.path ?? item.id, sizeLabel:item.sha256 ? `SHA-256 ${String(item.sha256).slice(0,12)}…` : "—", createdAt:"", downloadable:Boolean(item.path), note:item.sha256 ? `Checksum ${item.sha256}` : undefined } as Artifact));
   }
-  cancelExperiment(id: string) {
-    return this.request<Experiment>(`/experiments/${encodeURIComponent(id)}/cancel`, {
+  async cancelExperiment(id: string) {
+    return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}/cancel`, {
       method: "POST",
-    });
+    }));
   }
   async exportExperiment(id: string, format: "markdown" | "json") {
-    const path = `/experiments/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`;
-    const response = await fetch(`${this.baseUrl}${path}`);
-    if (!response.ok) throw await ApiClientError.fromResponse(response, path);
-    return response.text();
+    return JSON.stringify(await this.request(`/experiments/${encodeURIComponent(id)}/export`), null, 2);
+  }
+  async recoverReport(id: string) { return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}/reports/recover`, { method:"POST" })); }
+  async downloadArtifact(experimentId: string, artifactId: string) {
+    const path=`/experiments/${encodeURIComponent(experimentId)}/artifacts/${encodeURIComponent(artifactId)}/download`;
+    const response=await fetch(`${this.baseUrl}${path}`);
+    if (!response.ok) throw await ApiClientError.fromResponse(response,path);
+    return response.blob();
   }
 }
 

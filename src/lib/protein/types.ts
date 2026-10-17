@@ -1,12 +1,15 @@
 // Typed domain models for ProtEva. All values flowing through the UI use these.
 
 export type ExperimentStatus =
+  | "draft"
   | "queued"
+  | "running"
   | "validating"
   | "sampling"
   | "evaluating"
   | "auditing"
   | "completed"
+  | "completed_with_warnings"
   | "failed"
   | "cancelled";
 
@@ -38,6 +41,8 @@ export interface SearchConfig {
   mutationStrategy: "conservative" | "balanced" | "exploratory";
   diversityPreference: number; // 0-100
   randomSeed: number;
+  enableExperimentalProxySelection?: boolean;
+  acknowledgeExperimentalProxy?: boolean;
 }
 
 export interface GenerationStat {
@@ -69,6 +74,11 @@ export interface Candidate {
   diversityScore: number;
   metrics: StructuralMetrics | null;
   warnings: string[];
+  targetMeanNll?: number | null;
+  offTargetMeanNll?: number | null;
+  targetPreference?: number | null;
+  seedMetrics?: Array<Record<string, unknown>>;
+  audit?: Record<string, unknown> | null;
 }
 
 export type AgentId =
@@ -126,7 +136,11 @@ export interface Experiment {
   requiresReview: number;
   generationStats: GenerationStat[];
   warnings: string[];
-  simulated: true;
+  executionMode: "demo" | "live";
+  simulated: boolean;
+  reportingStatus?: "not_requested" | "pending" | "running" | "completed" | "failed";
+  reportingError?: { code?: string; message?: string } | null;
+  error?: { code?: string; message?: string } | null;
 }
 
 export type ArtifactKind =
@@ -137,7 +151,10 @@ export type ArtifactKind =
   | "metric_table"
   | "config"
   | "event_log"
-  | "report";
+  | "report"
+  | "evidence_report"
+  | "ai_narrative"
+  | "proteinmpnn_score";
 
 export interface Artifact {
   id: string;
@@ -163,6 +180,7 @@ export interface ProtEvaApi {
     input: SequenceInput;
     target: TargetLandscape;
     config: SearchConfig;
+    executionMode?: "demo" | "live";
   }): Promise<Experiment>;
   listExperiments(): Promise<Experiment[]>;
   getExperiment(id: string): Promise<Experiment>;
@@ -172,4 +190,6 @@ export interface ProtEvaApi {
   getArtifacts(experimentId: string): Promise<Artifact[]>;
   cancelExperiment(id: string): Promise<Experiment>;
   exportExperiment(id: string, format: "markdown" | "json"): Promise<string>;
+  recoverReport?(id: string): Promise<Experiment>;
+  downloadArtifact?(experimentId: string, artifactId: string): Promise<Blob>;
 }

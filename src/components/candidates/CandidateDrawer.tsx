@@ -66,6 +66,7 @@ export function CandidateDrawer({
 }) {
   if (!candidate) return null;
   const metrics = candidate.metrics;
+  const isLiveMeasurement = candidate.targetMeanNll != null || candidate.offTargetMeanNll != null;
 
   return (
     <Sheet open={Boolean(candidate)} onOpenChange={onOpenChange}>
@@ -74,8 +75,7 @@ export function CandidateDrawer({
           <SheetTitle className="font-mono">{candidate.id}</SheetTitle>
           <SheetDescription>
             Generation {candidate.generation} · parent{" "}
-            <span className="font-mono">{candidate.parentId ?? "wild-type"}</span> · illustrative
-            demo candidate
+            <span className="font-mono">{candidate.parentId ?? "wild-type"}</span> · {isLiveMeasurement ? "recorded ProteinMPNN measurement" : "illustrative demo candidate"}
           </SheetDescription>
         </SheetHeader>
 
@@ -109,7 +109,7 @@ export function CandidateDrawer({
               onClick={() => {
                 downloadTextFile(
                   `${candidate.id}.fasta`,
-                  toFasta(`${candidate.id} DEMO_SIMULATED ${candidate.mutations.join(",")}`, candidate.sequence),
+                  toFasta(`${candidate.id} ${isLiveMeasurement ? "COMPUTATIONAL" : "DEMO_SIMULATED"} ${candidate.mutations.join(",")}`, candidate.sequence),
                 );
                 toast.success("FASTA downloaded");
               }}
@@ -140,8 +140,15 @@ export function CandidateDrawer({
           </div>
 
           <div>
-            <p className="mb-2 text-sm font-medium">Metrics (demonstration values)</p>
-            {metrics ? (
+            <p className="mb-2 text-sm font-medium">{isLiveMeasurement ? "ProteinMPNN compatibility measurements" : "Metrics (demonstration values)"}</p>
+            {isLiveMeasurement ? (
+              <div className="grid grid-cols-2 gap-2">
+                <Metric label="Target mean NLL" value={candidate.targetMeanNll?.toFixed(4) ?? "—"} hint="Lower is better under the same model configuration." />
+                <Metric label="Off-target mean NLL" value={candidate.offTargetMeanNll?.toFixed(4) ?? "—"} hint="Lower is better under the same model configuration." />
+                <Metric label="Target preference" value={candidate.targetPreference?.toFixed(4) ?? "—"} hint="off-target mean NLL − target mean NLL; higher favors target compatibility." />
+                <Metric label="Seed measurements" value={String(candidate.seedMetrics?.length ?? 0)} hint="Fixed-seed robustness audit records." />
+              </div>
+            ) : metrics ? (
               <div className="grid grid-cols-2 gap-2">
                 <Metric
                   label="Target occupancy"

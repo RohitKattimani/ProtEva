@@ -1,0 +1,13 @@
+Metadata-Version: 2.2
+Name: proteva-api
+Version: 0.1.0
+Summary: ProtEva API foundation
+Requires-Python: >=3.9
+Requires-Dist: fastapi==0.124.4
+Requires-Dist: pydantic==2.12.5
+Requires-Dist: pydantic-settings==2.11.0
+Requires-Dist: uvicorn==0.38.0
+Requires-Dist: google-genai<2,>=1.0
+Requires-Dist: numpy<3,>=1.26
+Provides-Extra: dev
+Requires-Dist: pytest==8.4.2; extra == "dev"

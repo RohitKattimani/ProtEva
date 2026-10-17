@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from functools import lru_cache
+from typing import Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,6 +12,13 @@ class Settings(BaseSettings):
 
     env: str = "development"
     database_path: str = "./proteva-dev.sqlite3"
+    google_api_key: Optional[str] = None
+    gemma_model: str = "gemma-4-26b-a4b-it"
+    gemma_fallback_model: Optional[str] = "gemma-4-31b-it"
+    proteinmpnn_python: str = ""
+    proteinmpnn_source: str = "../fast_screening/third_party/ProteinMPNN"
+    proteinmpnn_artifacts: str = "../fast_screening/artifacts"
+    prepared_structures: str = "../fast_screening/structures"
 
     @field_validator("env")
     @classmethod

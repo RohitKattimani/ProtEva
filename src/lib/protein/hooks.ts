@@ -24,17 +24,21 @@ export function useExperiments() {
 }
 
 export function useExperiment(id: string) {
-  return useQuery({ queryKey: ["experiment", id], queryFn: () => api.getExperiment(id) });
+  return useQuery({ queryKey: ["experiment", id], queryFn: () => api.getExperiment(id), refetchInterval: (query) => {
+    const status=query.state.data?.status;
+    return !isDemoMode && status && !["completed","completed_with_warnings","failed","cancelled","draft"].includes(status) ? 1500 : false;
+  }});
 }
 
 export function useExperimentEvents(id: string) {
-  return useQuery({ queryKey: ["events", id], queryFn: () => api.getExperimentEvents(id) });
+  return useQuery({ queryKey: ["events", id], queryFn: () => api.getExperimentEvents(id), refetchInterval: !isDemoMode ? 1500 : false });
 }
 
 export function useCandidates(query: CandidateQuery = {}) {
   return useQuery({
     queryKey: ["candidates", query],
     queryFn: () => api.getCandidates(query),
+    refetchInterval: !isDemoMode ? 1500 : false,
   });
 }
 
@@ -42,5 +46,6 @@ export function useArtifacts(experimentId: string) {
   return useQuery({
     queryKey: ["artifacts", experimentId],
     queryFn: () => api.getArtifacts(experimentId),
+    refetchInterval: !isDemoMode ? 1500 : false,
   });
 }

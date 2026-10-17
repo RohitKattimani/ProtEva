@@ -86,7 +86,7 @@ function ExperimentWorkspace() {
     (experiment.currentGeneration / Math.max(1, experiment.config.generations)) * 100,
   );
   const stageIndex = STATUS_PIPELINE.indexOf(experiment.status);
-  const running = !["completed", "failed", "cancelled"].includes(experiment.status);
+  const running = !["completed", "completed_with_warnings", "failed", "cancelled", "draft"].includes(experiment.status);
 
   async function exportReport(format: "markdown" | "json") {
     try {
@@ -106,7 +106,7 @@ function ExperimentWorkspace() {
     <div className="space-y-5">
       <PageHeader
         title={experiment.name}
-        description={`${experiment.id} · created ${formatDate(experiment.createdAt)} · simulated run, no sampling job dispatched`}
+        description={`${experiment.id} · created ${formatDate(experiment.createdAt)} · ${experiment.executionMode === "live" ? "live backend execution" : "simulated run, no sampling job dispatched"}`}
         actions={
           <>
             {running && (
@@ -126,11 +126,16 @@ function ExperimentWorkspace() {
             <Button onClick={() => exportReport("json")}>
               <FileJson className="size-4" /> Export JSON
             </Button>
+            {experiment.executionMode === "live" && experiment.reportingStatus === "failed" && api.recoverReport && (
+              <Button variant="outline" onClick={async () => { try { await api.recoverReport!(experimentId); toast.info("Report recovery requested"); } catch (err) { toast.error("Report recovery failed", { description: (err as Error).message }); } }}>
+                Retry reporting
+              </Button>
+            )}
           </>
         }
       />
 
-      <section className="experiment-objective"><p className="eyebrow">RESEARCH OBJECTIVE</p><h2>{experiment.target.objectiveText}</h2><div className="flex flex-wrap gap-3"><span className="font-mono text-xs text-muted-foreground">{experiment.sequence.length} RESIDUES</span><span className="font-mono text-xs text-muted-foreground">{experiment.config.populationSize} CANDIDATES / GENERATION</span><span className="font-mono text-xs text-accent">SIMULATED SEARCH</span></div></section>
+      <section className="experiment-objective"><p className="eyebrow">RESEARCH OBJECTIVE</p><h2>{experiment.target.objectiveText}</h2><div className="flex flex-wrap gap-3"><span className="font-mono text-xs text-muted-foreground">{experiment.sequence.length} RESIDUES</span><span className="font-mono text-xs text-muted-foreground">{experiment.config.populationSize} CANDIDATES / GENERATION</span><span className="font-mono text-xs text-accent">{experiment.executionMode === "live" ? "LIVE COMPUTATIONAL SEARCH" : "SIMULATED SEARCH"}</span>{experiment.executionMode === "live" && <span className="font-mono text-xs text-warning">REPORTING: {experiment.reportingStatus ?? "not_requested"}</span>}</div></section>
       <div className="run-progress">
         <div className="flex flex-wrap items-center gap-4 py-4">
           <StatusBadge status={experiment.status} />
@@ -394,7 +399,7 @@ function ExperimentWorkspace() {
                       <TableHead>Gen.</TableHead>
                       <TableHead>Mutations</TableHead>
                       <TableHead className="hidden md:table-cell">Sequence</TableHead>
-                      <TableHead className="text-right">Score</TableHead>
+                      <TableHead className="text-right">{experiment.executionMode === "live" ? "Target preference" : "Score"}</TableHead>
                       <TableHead>Evaluation</TableHead>
                       <TableHead>Audit</TableHead>
                     </TableRow>
@@ -415,7 +420,7 @@ function ExperimentWorkspace() {
                           {candidate.sequence.slice(0, 28)}…
                         </TableCell>
                         <TableCell className="text-right font-mono tabular-nums">
-                          {candidate.objectiveScore?.toFixed(3) ?? "—"}
+                          {experiment.executionMode === "live" ? candidate.targetPreference?.toFixed(4) ?? "—" : candidate.objectiveScore?.toFixed(3) ?? "—"}
                         </TableCell>
                         <TableCell className="text-xs capitalize">
                           {candidate.evaluationStatus}
@@ -548,6 +553,17 @@ function ExperimentWorkspace() {
                           variant="outline"
                           disabled={!artifact.downloadable}
                           onClick={async () => {
+                            if (experiment.executionMode === "live" && api.downloadArtifact && artifact.downloadable) {
+                              try {
+                                const blob = await api.downloadArtifact(experimentId, artifact.id);
+                                const url = URL.createObjectURL(blob);
+                                const link = document.createElement("a");
+                                link.href = url; link.download = artifact.name; link.click();
+                                URL.revokeObjectURL(url);
+                                toast.success("Artifact downloaded");
+                              } catch (err) { toast.error("Artifact download failed", { description: (err as Error).message }); }
+                              return;
+                            }
                             if (artifact.kind === "report") return exportReport("markdown");
                             if (artifact.kind === "config") {
                               downloadTextFile(

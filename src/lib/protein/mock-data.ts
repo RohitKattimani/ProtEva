@@ -397,6 +397,7 @@ export function buildSeedExperiments(): Experiment[] {
           ? ["Demo run stopped: simulated sampling worker became unreachable at generation 3."]
           : ["Rankings within 0.05 objective score are not separable at the demo sample budget."],
       simulated: true as const,
+      executionMode: "demo" as const,
     };
   });
 }
