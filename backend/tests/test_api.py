@@ -32,6 +32,21 @@ PAYLOAD = {
 }
 
 
+LIVE_CONFIG = {
+    "populationSize": 2,
+    "generations": 1,
+    "maxSubstitutions": 1,
+    "screeningSeed": 17,
+    "finalistRescoreSeeds": [23, 41],
+    "maxFinalists": 1,
+    "candidateEvaluationBudget": 2,
+    "mutationStrategy": "balanced",
+    "diversityPreference": 50,
+    "randomSeed": 7,
+    "acknowledgeExperimentalProxy": True,
+}
+
+
 @pytest.fixture
 def repository(tmp_path, monkeypatch):
     instance = SQLiteExperimentRepository(str(tmp_path / "test.sqlite3"))
@@ -67,7 +82,7 @@ def test_demo_request_persists_as_draft_without_results(repository):
 
 
 def test_live_request_is_recorded_then_fails_without_server_credentials(repository, monkeypatch):
-    live_request = ExperimentCreate.model_validate({**PAYLOAD, "executionMode": "live", "config": {**PAYLOAD["config"], "acknowledgeExperimentalProxy": True}})
+    live_request = ExperimentCreate.model_validate({**PAYLOAD, "executionMode": "live", "config": LIVE_CONFIG})
     class Synchronous:
         def __init__(self, workflow, experiment_id): workflow.run(experiment_id)
     monkeypatch.setattr(main, "start_workflow", lambda workflow, experiment_id: Synchronous(workflow, experiment_id))

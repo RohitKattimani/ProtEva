@@ -7,12 +7,12 @@ import pytest
 
 from proteva_api.live import ALLOWED_TOOLS, GemmaFunctionClient, LiveWorkflow, LiveWorkflowError
 from proteva_api.repository import SQLiteExperimentRepository
-from proteva_api.schemas import Candidate, ExecutionMode, Experiment, ExperimentStatus, ReportingStatus, SearchConfig, SequenceInput, TargetLandscape
+from proteva_api.schemas import Candidate, ExecutionMode, Experiment, ExperimentStatus, LiveSearchConfig, ReportingStatus, SequenceInput, TargetLandscape
 from proteva_api.settings import Settings
 
 
 def experiment():
-    return Experiment(id="exp_live", name="Live", executionMode=ExecutionMode.live, status=ExperimentStatus.queued, createdAt=datetime.now(timezone.utc), input=SequenceInput(experimentName="Live", sequence="AC"), target=TargetLandscape(objectiveText="x", targetStateDescription="x", structuralMetric="rmsd", residueRegion="1-2", preservationConstraints="x"), config=SearchConfig(populationSize=2, generations=1, maxSubstitutions=1, screeningSamples=1, finalistSamples=1, mutationStrategy="x", diversityPreference=1, randomSeed=1, enableExperimentalProxySelection=True, acknowledgeExperimentalProxy=True))
+    return Experiment(id="exp_live", name="Live", executionMode=ExecutionMode.live, status=ExperimentStatus.queued, createdAt=datetime.now(timezone.utc), input=SequenceInput(experimentName="Live", sequence="AC"), target=TargetLandscape(objectiveText="x", targetStateDescription="x", structuralMetric="rmsd", residueRegion="1-2", preservationConstraints="x"), config=LiveSearchConfig(populationSize=2, generations=1, maxSubstitutions=1, mutationStrategy="x", diversityPreference=1, randomSeed=1, enableExperimentalProxySelection=True, acknowledgeExperimentalProxy=True))
 
 
 def test_missing_credential_is_explicit_and_persisted(tmp_path):
@@ -141,7 +141,7 @@ def test_report_only_recovery_uses_persisted_evidence_and_is_idempotent(tmp_path
         def request_report_narrative(self, state, max_attempts=1):
             return {"narrative":{"summary":"Measured evidence summarized.","limitations":["Proxy only"]},"model":"test-model","attempts":[{"attempt":1,"status":"success"}]}
     workflow=LiveWorkflow(repo,Settings(database_path=str(tmp_path/"recover.sqlite3"),google_api_key="test",proteinmpnn_artifacts=str(tmp_path/"artifacts"),prepared_structures=str(tmp_path/"structures")),ReportGemma())
-    monkeypatch.setattr(workflow,"_generate_candidates",lambda *_: (_ for _ in ()).throw(AssertionError("GA reran")))
+    monkeypatch.setattr(workflow,"_ga",lambda *_: (_ for _ in ()).throw(AssertionError("GA reran")))
     monkeypatch.setattr(workflow,"_score",lambda *_: (_ for _ in ()).throw(AssertionError("ProteinMPNN reran")))
     workflow.recover_report(item.id)
     stored=repo.get(item.id)
@@ -169,7 +169,7 @@ def test_resume_after_scoring_reuses_persisted_candidates_without_rescoring(tmp_
         def request_report_narrative(self, state, max_attempts=1):
             return {"narrative":{"summary":"Persisted evidence summarized.","limitations":["Proxy only"]},"model":"test-model","attempts":[{"attempt":1,"status":"success"}]}
     workflow=LiveWorkflow(repo,Settings(database_path=str(tmp_path/"resume.sqlite3"),google_api_key="test",proteinmpnn_artifacts=str(tmp_path/"artifacts"),prepared_structures=str(tmp_path/"structures")),ResumingGemma())
-    monkeypatch.setattr(workflow,"_generate_candidates",lambda *_: (_ for _ in ()).throw(AssertionError("GA reran")))
+    monkeypatch.setattr(workflow,"_ga",lambda *_: (_ for _ in ()).throw(AssertionError("GA reran")))
     monkeypatch.setattr(workflow,"_score",lambda *_: (_ for _ in ()).throw(AssertionError("ProteinMPNN reran")))
     workflow.resume_after_scoring(item.id)
     stored=repo.get(item.id)

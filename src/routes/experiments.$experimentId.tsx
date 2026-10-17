@@ -1,12 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  AlertTriangle,
-  Download,
-  FileJson,
-  FileText,
-  GitBranch,
-  Square,
-} from "lucide-react";
+import { AlertTriangle, Download, FileJson, FileText, GitBranch, Square } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -15,6 +8,7 @@ import { DiversityChart, ObjectiveChart } from "@/components/app/Charts";
 import { Pill, StatusBadge } from "@/components/app/StatusBadge";
 import { AgentGrid, AgentInspector, AgentTimeline } from "@/components/agents/AgentViews";
 import { CandidateDrawer } from "@/components/candidates/CandidateDrawer";
+import { ReferenceViewer } from "@/components/molecules/ReferenceViewer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -29,7 +23,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api } from "@/lib/protein/api";
-import { STATUS_PIPELINE, candidateLabel, downloadTextFile, experimentProgressLabel, formatDate, toFasta } from "@/lib/protein/format";
+import {
+  LIVE_PIPELINE,
+  STATUS_LABEL,
+  STATUS_PIPELINE,
+  candidateLabel,
+  downloadTextFile,
+  experimentProgressLabel,
+  formatDate,
+  isLiveSearchConfig,
+  isTerminalStatus,
+  toFasta,
+} from "@/lib/protein/format";
 import {
   useArtifacts,
   useCandidates,
@@ -82,11 +87,53 @@ function ExperimentWorkspace() {
 
   const scored = candidates.filter((c) => c.objectiveScore != null);
   const best = [...scored].sort((a, b) => (b.objectiveScore ?? 0) - (a.objectiveScore ?? 0))[0];
-  const progress = Math.round(
-    (experiment.currentGeneration / Math.max(1, experiment.config.generations)) * 100,
+  const isLive = experiment.executionMode === "live";
+  const terminal = isTerminalStatus(experiment.status);
+  const pipeline = isLive ? LIVE_PIPELINE : STATUS_PIPELINE;
+  const stageIndex = isLive
+    ? terminal
+      ? pipeline.length - 1
+      : pipeline.indexOf(experiment.status)
+    : STATUS_PIPELINE.indexOf(experiment.status);
+  const progress: number | undefined = isLive
+    ? terminal
+      ? 100
+      : undefined
+    : Math.round((experiment.currentGeneration / Math.max(1, experiment.config.generations)) * 100);
+  const running = !terminal && experiment.status !== "draft";
+  // Resume-after-scoring is only offered when the persisted measurements can
+  // actually support it: every candidate scored, finalists re-scored across
+  // seeds, and no audit recorded yet.  Otherwise the backend would reject it.
+  const hasAuditEvent = events.some(
+    (event: any) => (event as any).kind === "audit" || (event as any).payload?.kind === "audit",
   );
-  const stageIndex = STATUS_PIPELINE.indexOf(experiment.status);
-  const running = !["completed", "completed_with_warnings", "failed", "cancelled", "draft"].includes(experiment.status);
+  const canResumeAudit =
+    isLive &&
+    experiment.status === "failed" &&
+    !hasAuditEvent &&
+    candidates.length > 0 &&
+    candidates.every(
+      (candidate) =>
+        candidate.targetMeanNll != null &&
+        candidate.offTargetMeanNll != null &&
+        candidate.targetPreference != null &&
+        (candidate.seedMetrics?.length ?? 0) > 0,
+    ) &&
+    candidates.some((candidate) => (candidate.seedMetrics?.length ?? 0) >= 3);
+  const preferenceValues = candidates
+    .map((candidate) => candidate.targetPreference)
+    .filter((value): value is number => value != null);
+  const preferenceRange: [number, number] = preferenceValues.length
+    ? [Math.min(...preferenceValues), Math.max(...preferenceValues)]
+    : [0, 0];
+  function scoreIntensity(candidate: Candidate) {
+    const value = candidate.objectiveScore ?? candidate.targetPreference ?? null;
+    if (value == null) return 4;
+    if (!isLive) return Math.max(4, Math.min(100, Math.round(value * 100)));
+    const [low, high] = preferenceRange;
+    if (high === low) return 60;
+    return Math.max(4, Math.round(((value - low) / (high - low)) * 100));
+  }
 
   async function exportReport(format: "markdown" | "json") {
     try {
@@ -126,33 +173,84 @@ function ExperimentWorkspace() {
             <Button onClick={() => exportReport("json")}>
               <FileJson className="size-4" /> Export JSON
             </Button>
-            {experiment.executionMode === "live" && experiment.reportingStatus === "failed" && api.recoverReport && (
-              <Button variant="outline" onClick={async () => { try { await api.recoverReport!(experimentId); toast.info("Report recovery requested"); } catch (err) { toast.error("Report recovery failed", { description: (err as Error).message }); } }}>
-                Retry reporting
-              </Button>
-            )}
-            {experiment.executionMode === "live" && experiment.status === "failed" && api.resumeAfterScoring && (
-              <Button variant="outline" onClick={async () => { try { await api.resumeAfterScoring!(experimentId); toast.info("Resumed from persisted ProteinMPNN scores"); } catch (err) { toast.error("Resume failed", { description: (err as Error).message }); } }}>
-                Resume audit
-              </Button>
-            )}
+            {experiment.executionMode === "live" &&
+              experiment.reportingStatus === "failed" &&
+              api.recoverReport && (
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      await api.recoverReport!(experimentId);
+                      toast.info("Report recovery requested");
+                    } catch (err) {
+                      toast.error("Report recovery failed", {
+                        description: (err as Error).message,
+                      });
+                    }
+                  }}
+                >
+                  Retry reporting
+                </Button>
+              )}
+            {experiment.executionMode === "live" &&
+              experiment.status === "failed" &&
+              api.resumeAfterScoring && (
+                <Button
+                  variant="outline"
+                  disabled={!canResumeAudit}
+                  title={
+                    canResumeAudit
+                      ? "Finish the audit and report stages from persisted ProteinMPNN scores"
+                      : "Resume is unavailable: this run does not have complete persisted screening and finalist seed-rescoring records"
+                  }
+                  onClick={async () => {
+                    try {
+                      await api.resumeAfterScoring!(experimentId);
+                      toast.info("Resumed from persisted ProteinMPNN scores");
+                    } catch (err) {
+                      toast.error("Resume failed", { description: (err as Error).message });
+                    }
+                  }}
+                >
+                  Resume audit
+                </Button>
+              )}
           </>
         }
       />
 
-      <section className="experiment-objective"><p className="eyebrow">RESEARCH OBJECTIVE</p><h2>{experiment.target.objectiveText}</h2><div className="flex flex-wrap gap-3"><span className="font-mono text-xs text-muted-foreground">{experiment.sequence.length} RESIDUES</span><span className="font-mono text-xs text-muted-foreground">{experiment.config.populationSize} CANDIDATES / GENERATION</span><span className="font-mono text-xs text-accent">{experiment.executionMode === "live" ? "LIVE COMPUTATIONAL SEARCH" : "SIMULATED SEARCH"}</span>{experiment.executionMode === "live" && <span className="font-mono text-xs text-warning">REPORTING: {experiment.reportingStatus ?? "not_requested"}</span>}</div></section>
+      <section className="experiment-objective">
+        <p className="eyebrow">RESEARCH OBJECTIVE</p>
+        <h2>{experiment.target.objectiveText}</h2>
+        <div className="flex flex-wrap gap-3">
+          <span className="font-mono text-xs text-muted-foreground">
+            {experiment.sequence.length} RESIDUES
+          </span>
+          <span className="font-mono text-xs text-muted-foreground">
+            {experiment.config.populationSize} CANDIDATES / GENERATION
+          </span>
+          <span className="font-mono text-xs text-accent">
+            {experiment.executionMode === "live" ? "LIVE COMPUTATIONAL SEARCH" : "SIMULATED SEARCH"}
+          </span>
+          {experiment.executionMode === "live" && (
+            <span className="font-mono text-xs text-warning">
+              REPORTING: {experiment.reportingStatus ?? "not_requested"}
+            </span>
+          )}
+        </div>
+      </section>
       <div className="run-progress">
         <div className="flex flex-wrap items-center gap-4 py-4">
           <StatusBadge status={experiment.status} />
           <div className="min-w-56 flex-1">
             <div className="mb-1 flex justify-between text-xs text-muted-foreground">
               <span>{experimentProgressLabel(experiment)}</span>
-              <span>{progress}%</span>
+              {progress != null && <span>{progress}%</span>}
             </div>
             <Progress value={progress} className="h-1.5" />
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {STATUS_PIPELINE.map((stage, index) => (
+            {pipeline.map((stage, index) => (
               <Pill
                 key={stage}
                 tone={
@@ -163,13 +261,16 @@ function ExperimentWorkspace() {
                       : "muted"
                 }
               >
-                {stage}
+                {STATUS_LABEL[stage]}
               </Pill>
             ))}
             {(experiment.status === "failed" || experiment.status === "cancelled") && (
               <Pill tone={experiment.status === "failed" ? "danger" : "muted"}>
-                {experiment.status}
+                {STATUS_LABEL[experiment.status]}
               </Pill>
+            )}
+            {isLive && experiment.status === "completed_with_warnings" && (
+              <Pill tone="warning">{STATUS_LABEL.completed_with_warnings}</Pill>
             )}
           </div>
         </div>
@@ -190,15 +291,23 @@ function ExperimentWorkspace() {
           <div className="grid gap-4 xl:grid-cols-3">
             <Card className="xl:col-span-2">
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">Objective score by generation</CardTitle>
-                <CardDescription>Illustrative demonstration values</CardDescription>
+                <CardTitle className="text-base">
+                  {isLive ? "Target preference by generation" : "Objective score by generation"}
+                </CardTitle>
+                <CardDescription>
+                  {isLive
+                    ? "Measured ProteinMPNN backbone-compatibility proxy per persisted generation"
+                    : "Illustrative demonstration values"}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 {experiment.generationStats.length ? (
                   <ObjectiveChart data={experiment.generationStats} />
                 ) : (
                   <p className="py-10 text-center text-sm text-muted-foreground">
-                    No generations completed yet.
+                    {isLive
+                      ? "No scored generation has been recorded for this run yet."
+                      : "No generations completed yet."}
                   </p>
                 )}
               </CardContent>
@@ -206,7 +315,10 @@ function ExperimentWorkspace() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Population diversity</CardTitle>
-                <CardDescription>Mean pairwise divergence (illustrative)</CardDescription>
+                <CardDescription>
+                  Mean pairwise divergence{" "}
+                  {isLive ? "(from persisted sequences)" : "(illustrative)"}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 {experiment.generationStats.length ? (
@@ -228,7 +340,8 @@ function ExperimentWorkspace() {
                   <>
                     <p className="font-mono">{best.id}</p>
                     <p className="text-muted-foreground">
-                      Score {best.objectiveScore?.toFixed(3)} · generation {best.generation}
+                      {isLive ? "Target preference" : "Score"}{" "}
+                      {best.objectiveScore?.toFixed(isLive ? 4 : 3)} · generation {best.generation}
                     </p>
                     <div className="flex flex-wrap gap-1">
                       {best.mutations.map((m) => (
@@ -249,14 +362,27 @@ function ExperimentWorkspace() {
 
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">Search settings</CardTitle>
+                <CardTitle className="text-base">Requested search settings</CardTitle>
+                <CardDescription>The configuration exactly as submitted</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-1 font-mono text-[11px] text-muted-foreground">
                 <span>population = {experiment.config.populationSize}</span>
                 <span>generations = {experiment.config.generations}</span>
                 <span>max_substitutions = {experiment.config.maxSubstitutions}</span>
-                <span>screening_samples = {experiment.config.screeningSamples}</span>
-                <span>finalist_samples = {experiment.config.finalistSamples}</span>
+                {isLiveSearchConfig(experiment.config) ? (
+                  <>
+                    <span>screening_seed = {experiment.config.screeningSeed}</span>
+                    <span>
+                      finalist_seeds = [{experiment.config.finalistRescoreSeeds.join(", ")}]
+                    </span>
+                    <span>max_finalists = {experiment.config.maxFinalists}</span>
+                  </>
+                ) : (
+                  <>
+                    <span>screening_samples = {experiment.config.screeningSamples}</span>
+                    <span>finalist_samples = {experiment.config.finalistSamples}</span>
+                  </>
+                )}
                 <span>strategy = {experiment.config.mutationStrategy}</span>
                 <span>seed = {experiment.config.randomSeed}</span>
               </CardContent>
@@ -280,6 +406,86 @@ function ExperimentWorkspace() {
             </Card>
           </div>
 
+          {isLive && experiment.effectiveConfig && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Effective live configuration</CardTitle>
+                <CardDescription>
+                  What the execution engine actually ran, derived from persisted records
+                  {experiment.effectiveConfig.source === "derived_from_persisted_records"
+                    ? " (reconstructed from a run recorded before the live schema existed)"
+                    : ""}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid gap-1 font-mono text-[11px] text-muted-foreground sm:grid-cols-2">
+                  <span>
+                    requested_population = {experiment.effectiveConfig.requestedPopulationSize} →
+                    effective_population = {experiment.effectiveConfig.populationSize}
+                  </span>
+                  <span>
+                    requested_generations = {experiment.effectiveConfig.requestedGenerations} →
+                    effective_generations = {experiment.effectiveConfig.generations}
+                  </span>
+                  <span>
+                    candidates_evaluated = {experiment.effectiveConfig.candidatesEvaluated}
+                  </span>
+                  <span>
+                    evaluation_budget = {experiment.effectiveConfig.candidateEvaluationBudget}
+                  </span>
+                  <span>screening_seed = {experiment.effectiveConfig.screeningSeed ?? "—"}</span>
+                  <span>
+                    finalist_rescore_seeds = [
+                    {experiment.effectiveConfig.finalistRescoreSeeds.join(", ")}]
+                  </span>
+                  <span>max_finalists = {experiment.effectiveConfig.maxFinalists}</span>
+                  <span>random_seed = {experiment.effectiveConfig.randomSeed}</span>
+                  <span className="sm:col-span-2">
+                    protected_positions = [
+                    {experiment.effectiveConfig.protectedPositions.join(", ")}]
+                  </span>
+                </div>
+                <div className="space-y-1.5 text-xs">
+                  <p className="flex flex-wrap items-center gap-2">
+                    <Pill tone={experiment.effectiveConfig.metricSupported ? "success" : "warning"}>
+                      {experiment.effectiveConfig.metricSupported
+                        ? "metric computed"
+                        : "requested metric not computed"}
+                    </Pill>
+                    <span className="text-muted-foreground">
+                      Requested: {experiment.effectiveConfig.requestedMetric} · Computed:{" "}
+                      {experiment.effectiveConfig.supportedMetric}
+                    </span>
+                  </p>
+                  <p className="flex flex-wrap items-center gap-2">
+                    <Pill
+                      tone={
+                        experiment.effectiveConfig.protectedConstraintEnforced
+                          ? "success"
+                          : "warning"
+                      }
+                    >
+                      {experiment.effectiveConfig.protectedConstraintEnforced
+                        ? "protected motif enforced"
+                        : "protected motif not enforced by this run"}
+                    </Pill>
+                  </p>
+                  {experiment.effectiveConfig.protectedConstraintViolations.length > 0 && (
+                    <p className="rounded-md border border-warning/30 bg-warning/5 p-2 font-mono text-[11px] text-warning">
+                      P-loop changes recorded:{" "}
+                      {experiment.effectiveConfig.protectedConstraintViolations.join(", ")}
+                    </p>
+                  )}
+                  {experiment.effectiveConfig.protectedPositionsSource && (
+                    <p className="text-[11px] text-muted-foreground">
+                      {experiment.effectiveConfig.protectedPositionsSource}
+                    </p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Recent agent events</CardTitle>
@@ -291,7 +497,11 @@ function ExperimentWorkspace() {
         </TabsContent>
 
         <TabsContent value="agent-trace" className="space-y-4 pt-4">
-          <AgentGrid events={events} onSelect={setSelectedAgent} />
+          <AgentGrid
+            events={events}
+            onSelect={setSelectedAgent}
+            executionMode={experiment.executionMode}
+          />
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Communication timeline</CardTitle>
@@ -335,7 +545,10 @@ function ExperimentWorkspace() {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Population grid</CardTitle>
               <CardDescription>
-                Each tile is a candidate; colour intensity follows the illustrative objective score
+                Each tile is a candidate; colour intensity follows{" "}
+                {isLive
+                  ? "the measured target preference across this run's candidates"
+                  : "the illustrative objective score"}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -352,7 +565,7 @@ function ExperimentWorkspace() {
                           title={`${candidate.id} · score ${candidate.objectiveScore ?? "n/a"}`}
                           className="size-8 rounded border border-border transition-transform hover:scale-110"
                           style={{
-                            backgroundColor: `color-mix(in oklab, var(--color-primary) ${Math.round((candidate.objectiveScore ?? 0) * 100)}%, var(--color-surface))`,
+                            backgroundColor: `color-mix(in oklab, var(--color-primary) ${scoreIntensity(candidate)}%, var(--color-surface))`,
                           }}
                         >
                           <span className="sr-only">{candidate.id}</span>
@@ -381,7 +594,7 @@ function ExperimentWorkspace() {
                   <span className="text-muted-foreground">
                     {candidate.parentId ?? "wild-type"} →{" "}
                   </span>
-                          <span className="text-primary">{candidateLabel(candidate)}</span>{" "}
+                  <span className="text-primary">{candidateLabel(candidate)}</span>{" "}
                   <span className="text-muted-foreground">
                     [{candidate.mutations.slice(-2).join(", ") || "—"}]
                   </span>
@@ -402,7 +615,9 @@ function ExperimentWorkspace() {
                       <TableHead>Gen.</TableHead>
                       <TableHead>Mutations</TableHead>
                       <TableHead className="hidden md:table-cell">Sequence</TableHead>
-                      <TableHead className="text-right">{experiment.executionMode === "live" ? "Target preference" : "Score"}</TableHead>
+                      <TableHead className="text-right">
+                        {experiment.executionMode === "live" ? "Target preference" : "Score"}
+                      </TableHead>
                       <TableHead>Evaluation</TableHead>
                       <TableHead>Audit</TableHead>
                     </TableRow>
@@ -414,7 +629,9 @@ function ExperimentWorkspace() {
                         className="cursor-pointer"
                         onClick={() => setSelectedCandidate(candidate)}
                       >
-                        <TableCell className="font-mono text-xs">{candidateLabel(candidate)}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {candidateLabel(candidate)}
+                        </TableCell>
                         <TableCell className="font-mono">{candidate.generation}</TableCell>
                         <TableCell className="font-mono text-xs text-primary">
                           {candidate.mutations.slice(-3).join(", ") || "—"}
@@ -423,7 +640,9 @@ function ExperimentWorkspace() {
                           {candidate.sequence.slice(0, 28)}…
                         </TableCell>
                         <TableCell className="text-right font-mono tabular-nums">
-                          {experiment.executionMode === "live" ? candidate.targetPreference?.toFixed(4) ?? "—" : candidate.objectiveScore?.toFixed(3) ?? "—"}
+                          {experiment.executionMode === "live"
+                            ? (candidate.targetPreference?.toFixed(4) ?? "—")
+                            : (candidate.objectiveScore?.toFixed(3) ?? "—")}
                         </TableCell>
                         <TableCell className="text-xs capitalize">
                           {candidate.evaluationStatus}
@@ -451,76 +670,174 @@ function ExperimentWorkspace() {
         </TabsContent>
 
         <TabsContent value="landscape" className="space-y-4 pt-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">Target vs undesired state</CardTitle>
-              <CardDescription>
-                Occupancy = fraction of sampled conformations matching the state definition
-                (illustrative)
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-md border border-border bg-surface p-4">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                  Target state
-                </p>
-                <p className="mt-1 text-sm">{experiment.target.targetStateDescription}</p>
-                <p className="mt-3 font-mono text-3xl tabular-nums text-accent">
-                  {best?.metrics ? best.metrics.targetOccupancy.toFixed(2) : "—"}
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  ± {best?.metrics?.uncertainty.toFixed(3) ?? "—"} over{" "}
-                  {best?.metrics?.sampleCount ?? 0} samples
-                </p>
-              </div>
-              <div className="rounded-md border border-border bg-surface p-4">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                  Undesired state
-                </p>
-                <p className="mt-1 text-sm">
-                  {experiment.target.undesiredStateDescription ?? "Not declared"}
-                </p>
-                <p className="mt-3 font-mono text-3xl tabular-nums text-muted-foreground">
-                  {best?.metrics ? best.metrics.offTargetOccupancy.toFixed(2) : "—"}
-                </p>
-                <p className="text-[11px] text-muted-foreground">Off-target occupancy</p>
-              </div>
-            </CardContent>
-          </Card>
+          {isLive ? (
+            <>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Metric provenance</CardTitle>
+                  <CardDescription>What the live evaluator actually computed</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
+                    <p>
+                      Requested structural metric{" "}
+                      <span className="font-mono">{experiment.target.structuralMetric}</span>
+                      {experiment.effectiveConfig && !experiment.effectiveConfig.metricSupported ? (
+                        <>
+                          {" "}
+                          is <strong className="text-warning">not computed</strong> by the live
+                          evaluator. No RMSD, occupancy, radius of gyration or sample count exists
+                          for these candidates.
+                        </>
+                      ) : null}
+                    </p>
+                    <p className="mt-2">
+                      The only quantity measured by this workflow is{" "}
+                      <span className="font-mono">
+                        {experiment.effectiveConfig?.supportedMetric ?? "target_preference"}
+                      </span>
+                      : the ProteinMPNN backbone-compatibility proxy (off-target mean NLL minus
+                      target mean NLL). Higher values mean the sequence is more compatible with the
+                      4AKE target backbone than the 1AKE off-target backbone.
+                    </p>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    This is a per-sequence ProteinMPNN score, not a BioEmu conformational ensemble,
+                    so occupancy, ensemble uncertainty and sample-count values are unavailable and
+                    are shown as em dashes rather than estimates.
+                  </p>
+                </CardContent>
+              </Card>
 
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">Structural metric distribution</CardTitle>
-              <CardDescription>
-                RMSD values across evaluated candidates — demonstration data only
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="flex h-40 items-end gap-1">
-                {Array.from({ length: 20 }).map((_, bin) => {
-                  const low = bin * 0.5;
-                  const count = scored.filter(
-                    (c) =>
-                      (c.metrics?.rmsdAngstrom ?? -1) >= low &&
-                      (c.metrics?.rmsdAngstrom ?? -1) < low + 0.5,
-                  ).length;
-                  const height = Math.min(100, count * 12);
-                  return (
-                    <div key={bin} className="flex-1" title={`${low}–${low + 0.5} Å: ${count}`}>
-                      <div
-                        className="w-full rounded-t bg-gradient-to-t from-primary/30 to-accent"
-                        style={{ height: `${height}%` }}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                X axis: RMSD bins 0–10 Å. Y axis: candidate count. Higher RMSD to the closed
-                reference indicates more open conformations.
-              </p>
-            </CardContent>
-          </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">
+                    Target preference across evaluated candidates
+                  </CardTitle>
+                  <CardDescription>
+                    Measured ProteinMPNN proxy values, highest first
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {scored.length ? (
+                    <ul className="space-y-1.5">
+                      {[...scored]
+                        .sort((a, b) => (b.targetPreference ?? 0) - (a.targetPreference ?? 0))
+                        .slice(0, 12)
+                        .map((candidate) => {
+                          const value = candidate.targetPreference ?? 0;
+                          const [low, high] = preferenceRange;
+                          const width =
+                            high === low ? 50 : Math.max(2, ((value - low) / (high - low)) * 100);
+                          return (
+                            <li
+                              key={candidate.id}
+                              className="grid grid-cols-[9rem_1fr_5rem] items-center gap-3 text-xs"
+                            >
+                              <button
+                                type="button"
+                                className="truncate text-left font-mono text-primary hover:underline"
+                                onClick={() => setSelectedCandidate(candidate)}
+                              >
+                                {candidate.id}
+                              </button>
+                              <div className="h-2 rounded bg-surface">
+                                <div
+                                  className="h-2 rounded bg-accent"
+                                  style={{ width: `${width}%` }}
+                                />
+                              </div>
+                              <span className="text-right font-mono tabular-nums text-muted-foreground">
+                                {candidate.targetPreference?.toFixed(4) ?? "—"}
+                              </span>
+                            </li>
+                          );
+                        })}
+                    </ul>
+                  ) : (
+                    <p className="py-8 text-center text-sm text-muted-foreground">
+                      No candidate has been scored yet for this run.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+
+              <ReferenceViewer />
+            </>
+          ) : (
+            <>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Target vs undesired state</CardTitle>
+                  <CardDescription>
+                    Occupancy = fraction of sampled conformations matching the state definition
+                    (illustrative)
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-md border border-border bg-surface p-4">
+                    <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                      Target state
+                    </p>
+                    <p className="mt-1 text-sm">{experiment.target.targetStateDescription}</p>
+                    <p className="mt-3 font-mono text-3xl tabular-nums text-accent">
+                      {best?.metrics ? best.metrics.targetOccupancy.toFixed(2) : "—"}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      ± {best?.metrics?.uncertainty.toFixed(3) ?? "—"} over{" "}
+                      {best?.metrics?.sampleCount ?? 0} samples
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-border bg-surface p-4">
+                    <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                      Undesired state
+                    </p>
+                    <p className="mt-1 text-sm">
+                      {experiment.target.undesiredStateDescription ?? "Not declared"}
+                    </p>
+                    <p className="mt-3 font-mono text-3xl tabular-nums text-muted-foreground">
+                      {best?.metrics ? best.metrics.offTargetOccupancy.toFixed(2) : "—"}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">Off-target occupancy</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Structural metric distribution</CardTitle>
+                  <CardDescription>
+                    RMSD values across evaluated candidates — demonstration data only
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex h-40 items-end gap-1">
+                    {Array.from({ length: 20 }).map((_, bin) => {
+                      const low = bin * 0.5;
+                      const count = scored.filter(
+                        (c) =>
+                          (c.metrics?.rmsdAngstrom ?? -1) >= low &&
+                          (c.metrics?.rmsdAngstrom ?? -1) < low + 0.5,
+                      ).length;
+                      const height = Math.min(100, count * 12);
+                      return (
+                        <div key={bin} className="flex-1" title={`${low}–${low + 0.5} Å: ${count}`}>
+                          <div
+                            className="w-full rounded-t bg-gradient-to-t from-primary/30 to-accent"
+                            style={{ height: `${height}%` }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    X axis: RMSD bins 0–10 Å. Y axis: candidate count. Higher RMSD to the closed
+                    reference indicates more open conformations.
+                  </p>
+                </CardContent>
+              </Card>
+            </>
+          )}
         </TabsContent>
 
         <TabsContent value="artifacts" className="pt-4">
@@ -556,15 +873,25 @@ function ExperimentWorkspace() {
                           variant="outline"
                           disabled={!artifact.downloadable}
                           onClick={async () => {
-                            if (experiment.executionMode === "live" && api.downloadArtifact && artifact.downloadable) {
+                            if (
+                              experiment.executionMode === "live" &&
+                              api.downloadArtifact &&
+                              artifact.downloadable
+                            ) {
                               try {
                                 const blob = await api.downloadArtifact(experimentId, artifact.id);
                                 const url = URL.createObjectURL(blob);
                                 const link = document.createElement("a");
-                                link.href = url; link.download = artifact.name; link.click();
+                                link.href = url;
+                                link.download = artifact.name;
+                                link.click();
                                 URL.revokeObjectURL(url);
                                 toast.success("Artifact downloaded");
-                              } catch (err) { toast.error("Artifact download failed", { description: (err as Error).message }); }
+                              } catch (err) {
+                                toast.error("Artifact download failed", {
+                                  description: (err as Error).message,
+                                });
+                              }
                               return;
                             }
                             if (artifact.kind === "report") return exportReport("markdown");
@@ -572,7 +899,11 @@ function ExperimentWorkspace() {
                               downloadTextFile(
                                 "experiment_config.json",
                                 JSON.stringify(
-                                  { input: experiment.input, target: experiment.target, config: experiment.config },
+                                  {
+                                    input: experiment.input,
+                                    target: experiment.target,
+                                    config: experiment.config,
+                                  },
                                   null,
                                   2,
                                 ),
@@ -589,20 +920,31 @@ function ExperimentWorkspace() {
                               return;
                             }
                             if (artifact.kind === "metric_table") {
-                              const header =
-                                "candidate_id,generation,mutations,objective_score,target_occupancy,rmsd_angstrom,samples,uncertainty\n";
+                              const header = isLive
+                                ? "candidate_id,generation,mutations,target_preference,target_mean_nll,off_target_mean_nll,scoring_seeds\n"
+                                : "candidate_id,generation,mutations,objective_score,target_occupancy,rmsd_angstrom,samples,uncertainty\n";
                               const body = candidates
                                 .map((c) =>
-                                  [
-                                    c.id,
-                                    c.generation,
-                                    `"${c.mutations.join(" ")}"`,
-                                    c.objectiveScore ?? "",
-                                    c.metrics?.targetOccupancy ?? "",
-                                    c.metrics?.rmsdAngstrom ?? "",
-                                    c.metrics?.sampleCount ?? "",
-                                    c.metrics?.uncertainty ?? "",
-                                  ].join(","),
+                                  isLive
+                                    ? [
+                                        c.id,
+                                        c.generation,
+                                        `"${c.mutations.join(" ")}"`,
+                                        c.targetPreference ?? "",
+                                        c.targetMeanNll ?? "",
+                                        c.offTargetMeanNll ?? "",
+                                        c.seedMetrics?.length || "",
+                                      ].join(",")
+                                    : [
+                                        c.id,
+                                        c.generation,
+                                        `"${c.mutations.join(" ")}"`,
+                                        c.objectiveScore ?? "",
+                                        c.metrics?.targetOccupancy ?? "",
+                                        c.metrics?.rmsdAngstrom ?? "",
+                                        c.metrics?.sampleCount ?? "",
+                                        c.metrics?.uncertainty ?? "",
+                                      ].join(","),
                                 )
                                 .join("\n");
                               downloadTextFile("metrics.csv", header + body, "text/csv");
@@ -611,7 +953,10 @@ function ExperimentWorkspace() {
                             if (artifact.kind === "input_fasta") {
                               downloadTextFile(
                                 "input_sequence.fasta",
-                                toFasta(`${experiment.id} input DEMO_SIMULATED`, experiment.sequence),
+                                toFasta(
+                                  `${experiment.id} input ${isLive ? "LIVE" : "DEMO_SIMULATED"}`,
+                                  experiment.sequence,
+                                ),
                               );
                               return;
                             }
@@ -620,7 +965,10 @@ function ExperimentWorkspace() {
                                 "candidates.fasta",
                                 candidates
                                   .map((c) =>
-                                    toFasta(`${c.id} gen${c.generation} ${c.mutations.join(",")}`, c.sequence),
+                                    toFasta(
+                                      `${c.id} gen${c.generation} ${c.mutations.join(",")}`,
+                                      c.sequence,
+                                    ),
                                   )
                                   .join(""),
                               );

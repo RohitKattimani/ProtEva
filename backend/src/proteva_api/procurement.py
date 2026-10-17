@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from .repository import SQLiteExperimentRepository
 from .schemas import (
+    AgentEvent,
     ProcurementMatchType,
     ProcurementProductType,
     ProcurementRequest,
@@ -283,6 +284,197 @@ class ProcurementWorkflow:
         request.updated_at = now()
         self.repository.replace_procurement_request(request)
         return request
+
+    def prepare_package(self, request_id: str) -> dict[str, Any]:
+        """Build a truthful, self-contained procurement handoff package.
+
+        The package contains a FASTA record, the exact sequence checksum, the
+        mutation list against the benchmark seed and a quote-request document.
+        It never fabricates supplier products, prices or availability: when no
+        supplier catalog adapter is configured the document states plainly that
+        no live catalog search was performed.
+        """
+        request = self.repository.get_procurement_request(request_id)
+        if request is None:
+            raise ValueError("Procurement request not found")
+        experiment = self.repository.get(request.experiment_id)
+        candidate = self.repository.candidate(request.experiment_id, request.candidate_id)
+        if experiment is None or candidate is None:
+            raise ValueError("Source experiment or candidate is unavailable")
+
+        sequence = candidate.sequence
+        digest = hashlib.sha256(sequence.encode("ascii")).hexdigest()
+        if digest != request.sequence_sha256:
+            raise ValueError("Persisted sequence checksum does not match the candidate record")
+
+        seed = experiment.input.sequence
+        mutations = self._mutation_list(seed, sequence)
+
+        demo = experiment.execution_mode.value == "demo"
+        adapters = self._adapters(demo)
+        live_adapters = [adapter for adapter in adapters if adapter.name != "demo-supplier"]
+        supplier_configured = bool(live_adapters) and all(adapter.configured() for adapter in live_adapters)
+        if demo:
+            supplier_status = "Demo mode: supplier results are simulated and no live catalog was contacted."
+        elif supplier_configured:
+            supplier_status = "A configured supplier adapter is present; confirm its results before ordering."
+        else:
+            supplier_status = (
+                "No live supplier catalog search was performed: no supplier API credential is configured. "
+                "This is a manual quotation request you send through an official supplier route."
+            )
+
+        evidence = self._evidence_reference(request.experiment_id)
+
+        caveats = [
+            "The candidate sequence is a computational ProteinMPNN proposal; it has not been experimentally expressed, purified or validated.",
+            "Target preference is a ProteinMPNN backbone-compatibility proxy (off-target mean NLL minus target mean NLL), not a measured binding, activity or stability value.",
+            "The off-target reference 1AKE is an AP5A inhibitor-bound structure, so the proxy does not represent an apo conformational equilibrium.",
+            "No supplier product, price, purity or availability is asserted in this package.",
+        ]
+        if not demo:
+            caveats.append("No live supplier catalog search was performed because no supplier API credential is configured.")
+        if evidence is None:
+            caveats.append("No deterministic evidence report has been generated for this experiment yet.")
+
+        fasta = self._fasta_record(request.candidate_id, request.experiment_id, digest, sequence)
+        document = self._quote_request_document(request, experiment, candidate, digest, mutations, supplier_status, evidence, caveats)
+
+        self.repository.add_event(
+            AgentEvent(
+                id="evt_" + hashlib.sha256(("package" + request_id + digest).encode()).hexdigest()[:24],
+                experiment_id=request.experiment_id,
+                timestamp=now(),
+                kind="decision",
+                summary="procurement handoff package prepared for candidate " + request.candidate_id,
+                payload={
+                    "candidateId": request.candidate_id,
+                    "sequenceSha256": digest,
+                    "files": [request.candidate_id + ".fasta", request.candidate_id + "-quote-request.md"],
+                    "supplierCatalogConfigured": supplier_configured,
+                },
+            )
+        )
+
+        return {
+            "requestId": request.id,
+            "experimentId": request.experiment_id,
+            "candidateId": request.candidate_id,
+            "candidateLabel": request.candidate_id,
+            "sequence": sequence,
+            "sequenceSha256": digest,
+            "sequenceLength": len(sequence),
+            "mutations": mutations,
+            "specification": request.specification.model_dump(by_alias=True),
+            "supplierCatalogConfigured": supplier_configured,
+            "supplierStatus": supplier_status,
+            "evidence": evidence,
+            "caveats": caveats,
+            "generatedAt": now().isoformat(),
+            "files": [
+                {"name": request.candidate_id + ".fasta", "mediaType": "text/plain", "content": fasta},
+                {
+                    "name": request.candidate_id + "-quote-request.md",
+                    "mediaType": "text/markdown",
+                    "content": document,
+                },
+            ],
+        }
+
+    @staticmethod
+    def _mutation_list(seed: str, sequence: str) -> list[str]:
+        if not seed or len(seed) != len(sequence):
+            return []
+        return [f"{seed[index]}{index + 1}{sequence[index]}" for index in range(len(seed)) if seed[index] != sequence[index]]
+
+    def _evidence_reference(self, experiment_id: str) -> Optional[dict[str, Any]]:
+        for artifact in self.repository.artifacts(experiment_id):
+            if artifact.get("kind") == "evidence_report":
+                return {
+                    "artifactId": artifact.get("id"),
+                    "sha256": artifact.get("sha256"),
+                    "path": artifact.get("path"),
+                    "note": "Deterministic evidence report built only from persisted records.",
+                }
+        return None
+
+    @staticmethod
+    def _fasta_record(candidate_id: str, experiment_id: str, digest: str, sequence: str) -> str:
+        header = f">ProtEva {candidate_id} | experiment {experiment_id} | sha256 {digest}"
+        lines = [sequence[index:index + 60] for index in range(0, len(sequence), 60)] or [""]
+        return header + "\n" + "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _quote_request_document(request, experiment, candidate, digest, mutations, supplier_status, evidence, caveats) -> str:
+        specification = request.specification
+        metric_lines = []
+        if candidate.target_mean_nll is not None:
+            metric_lines.append(f"- Target (4AKE) mean NLL: {candidate.target_mean_nll:.4f}")
+        if candidate.off_target_mean_nll is not None:
+            metric_lines.append(f"- Off-target (1AKE) mean NLL: {candidate.off_target_mean_nll:.4f}")
+        if candidate.target_preference is not None:
+            metric_lines.append(f"- Target preference (off-target NLL - target NLL): {candidate.target_preference:+.4f}")
+        if candidate.seed_metrics:
+            seeds = ", ".join(str(metric.get("seed")) for metric in candidate.seed_metrics)
+            metric_lines.append(f"- ProteinMPNN scoring seeds recorded: {seeds}")
+        if not metric_lines:
+            metric_lines.append("- No ProteinMPNN measurements are recorded for this candidate.")
+
+        mutation_text = ", ".join(mutations) if mutations else "None (identical to the benchmark seed sequence)"
+
+        document = [
+            f"# Protein quotation request - candidate {request.candidate_id}",
+            "",
+            "Prepared by ProtEva for a manual supplier quotation. This document contains no supplier product,",
+            "price, purity or availability claim.",
+            "",
+            "## Requested product",
+            f"- Product type: {specification.product_type.value}",
+            f"- Quantity: {specification.quantity or 'not specified'}",
+            f"- Purity: {specification.purity or 'not specified'}",
+            f"- Expression system: {specification.expression_system or 'not specified'}",
+            f"- Construct: {specification.construct or 'not specified'}",
+            f"- Tag: {specification.tag or 'not specified'}",
+            f"- Modification: {specification.modification or 'not specified'}",
+            f"- Formulation: {specification.formulation or 'not specified'}",
+            f"- Destination region: {specification.destination_region or 'not specified'}",
+            f"- Delivery timeframe: {specification.delivery_timeframe or 'not specified'}",
+            f"- Budget limit: {specification.budget_limit or 'not specified'}",
+            "",
+            "## Sequence to synthesise",
+            f"- Length: {len(candidate.sequence)} residues",
+            f"- SHA-256: {digest}",
+            f"- FASTA file: {request.candidate_id}.fasta",
+            "",
+            "```",
+            candidate.sequence,
+            "```",
+            "",
+            "## Mutations relative to the benchmark seed",
+            f"- {mutation_text}",
+            "",
+            "## Recorded computational evidence",
+            *metric_lines,
+            f"- Experiment: {experiment.name} ({experiment.id})",
+            f"- Execution mode: {experiment.execution_mode.value}",
+            "",
+            "## Supplier status",
+            supplier_status,
+            "",
+        ]
+        if evidence:
+            document.extend([
+                "## Evidence artifact",
+                f"- Evidence report id: {evidence['artifactId']}",
+                f"- SHA-256: {evidence['sha256']}",
+                "",
+            ])
+        document.extend([
+            "## Limitations",
+            *[f"- {caveat}" for caveat in caveats],
+            "",
+        ])
+        return "\n".join(document)
 
     def approve_and_add(self, request_id: str, approval_hash: str, consent: bool) -> ProcurementRequest:
         request = self.repository.get_procurement_request(request_id)

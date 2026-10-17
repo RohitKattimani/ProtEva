@@ -43,7 +43,7 @@ export const DEFAULT_TARGET: TargetLandscape = {
   undesiredStateDescription: "Fully collapsed pocket (closed reference state).",
   structuralMetric: "rmsd",
   thresholdAngstrom: 6,
-  residueRegion: "180-215",
+  residueRegion: "180-214",
   preservationConstraints: "Do not mutate catalytic residues S195, H57, D102.",
 };
 

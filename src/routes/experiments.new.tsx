@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Rocket, Upload } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/app/AppShell";
@@ -19,15 +19,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, isDemoMode } from "@/lib/protein/api";
-import { AMINO_ACIDS, DEFAULT_CONFIG, DEFAULT_TARGET, EXAMPLE_SEQUENCE } from "@/lib/protein/mock-data";
-import type { SearchConfig, SequenceInput, TargetLandscape } from "@/lib/protein/types";
+import {
+  AMINO_ACIDS,
+  DEFAULT_CONFIG,
+  DEFAULT_TARGET,
+  EXAMPLE_SEQUENCE,
+} from "@/lib/protein/mock-data";
+import type {
+  ExperimentSearchConfig,
+  LiveSearchConfig,
+  MutationStrategy,
+  ProtectedMotif,
+  SearchConfig,
+  SequenceInput,
+  TargetLandscape,
+} from "@/lib/protein/types";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/experiments/new")({
@@ -52,6 +60,28 @@ export const Route = createFileRoute("/experiments/new")({
 });
 
 const STEPS = ["Protein input", "Target landscape", "Search configuration", "Review & launch"];
+
+/** Live-execution defaults: no BioEmu-style sample counts, seed-based ProteinMPNN scoring. */
+const DEFAULT_LIVE_CONFIG: LiveSearchConfig = {
+  populationSize: 8,
+  generations: 1,
+  maxSubstitutions: 4,
+  screeningSeed: 17,
+  finalistRescoreSeeds: [23, 41],
+  maxFinalists: 3,
+  candidateEvaluationBudget: 8,
+  mutationStrategy: "balanced",
+  diversityPreference: 40,
+  randomSeed: 17,
+  enableExperimentalProxySelection: true,
+  acknowledgeExperimentalProxy: false,
+};
+
+const MUTATION_STRATEGIES: Array<{ value: MutationStrategy; label: string }> = [
+  { value: "conservative", label: "Conservative substitutions" },
+  { value: "balanced", label: "Balanced" },
+  { value: "exploratory", label: "Exploratory" },
+];
 
 function Hint({ text }: { text: string }) {
   return (
@@ -95,7 +125,7 @@ function NewExperiment() {
   const [step, setStep] = useState(0);
   const [launching, setLaunching] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [executionMode, setExecutionMode] = useState<"demo" | "live">("demo");
+  const [executionMode, setExecutionMode] = useState<"demo" | "live">(isDemoMode ? "demo" : "live");
 
   const [input, setInput] = useState<SequenceInput>({ experimentName: "", sequence: "" });
   const [target, setTarget] = useState<TargetLandscape>({
@@ -103,7 +133,37 @@ function NewExperiment() {
     objectiveText: "",
     targetStateDescription: "",
   });
-  const [config, setConfig] = useState<SearchConfig>(DEFAULT_CONFIG);
+  const [demoConfig, setDemoConfig] = useState<SearchConfig>(DEFAULT_CONFIG);
+  const [liveConfig, setLiveConfig] = useState<LiveSearchConfig>(DEFAULT_LIVE_CONFIG);
+  const [protectedMotif, setProtectedMotif] = useState<ProtectedMotif | null>(null);
+  const [protectedMotifError, setProtectedMotifError] = useState<string | null>(null);
+  const [referenceResidueCount, setReferenceResidueCount] = useState<number | null>(null);
+
+  const isLive = executionMode === "live";
+  const config: ExperimentSearchConfig = isLive ? liveConfig : demoConfig;
+
+  useEffect(() => {
+    if (!isLive || !api.getReferences) return;
+    let cancelled = false;
+    api
+      .getReferences()
+      .then((catalog) => {
+        if (cancelled) return;
+        setProtectedMotif(catalog.protectedMotif);
+        const target = catalog.references.find(
+          (reference) => reference.pdbId === "4AKE" && reference.available,
+        );
+        setReferenceResidueCount(target?.residueCount ?? null);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setProtectedMotifError(error instanceof Error ? error.message : "unavailable");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isLive]);
 
   const invalidChars = useMemo(() => {
     const cleaned = input.sequence.replace(/\s/g, "").toUpperCase();
@@ -112,13 +172,50 @@ function NewExperiment() {
 
   const sequenceLength = input.sequence.replace(/\s/g, "").length;
 
+  const liveErrors = [
+    liveConfig.populationSize < 2 || liveConfig.populationSize > 8
+      ? "Live population size must be between 2 and 8."
+      : "",
+    liveConfig.generations < 1 || liveConfig.generations > 2
+      ? "Live generations must be 1 or 2."
+      : "",
+    liveConfig.candidateEvaluationBudget < liveConfig.populationSize
+      ? "Candidate evaluation budget must be at least the population size."
+      : "",
+    liveConfig.maxFinalists < 1 ? "Max finalists must be at least 1." : "",
+    liveConfig.finalistRescoreSeeds.length < 1
+      ? "At least one finalist rescore seed is required."
+      : "",
+    step === 3 && !liveConfig.acknowledgeExperimentalProxy
+      ? "Acknowledge the experimental-proxy limitation before launching a live run."
+      : "",
+  ].filter(Boolean);
+
+  const liveMetricWarning =
+    (target.structuralMetric as string) !== "target_preference"
+      ? `The live evaluator does not compute "${target.structuralMetric}". It records the ProteinMPNN target preference instead, and this run will report the requested metric as uncomputed.`
+      : "";
+
+  const liveRegionError = (() => {
+    if (!isLive) return "";
+    const value = target.residueRegion?.trim() ?? "";
+    if (!value) return "";
+    const match = /^(\d{1,4})(?:\s*-\s*(\d{1,4}))?$/.exec(value);
+    if (!match) {
+      return `Residue region "${value}" is not a validated range; use a start-end pair such as 118-160.`;
+    }
+    const end = Number(match[2] ?? match[1]);
+    if (referenceResidueCount != null && end > referenceResidueCount) {
+      return `Residue region "${value}" is outside the prepared 4AKE chain A numbering (1-${referenceResidueCount}).`;
+    }
+    return "";
+  })();
+
   const stepWarnings: string[][] = [
     [
       !input.experimentName ? "Experiment name is required." : "",
       sequenceLength < 20 ? "Sequence should be at least 20 residues for a meaningful search." : "",
-      invalidChars.length
-        ? `Unsupported characters in sequence: ${invalidChars.join(", ")}`
-        : "",
+      invalidChars.length ? `Unsupported characters in sequence: ${invalidChars.join(", ")}` : "",
     ].filter(Boolean),
     [
       !target.objectiveText ? "Describe the objective in natural language." : "",
@@ -129,15 +226,24 @@ function NewExperiment() {
       !target.preservationConstraints
         ? "No preservation constraints — functional residues may be mutated."
         : "",
+      isLive ? liveRegionError : "",
+      isLive ? liveMetricWarning : "",
     ].filter(Boolean),
-    [
-      config.populationSize * config.generations > 600
-        ? "Large search space: compute estimates become unreliable."
-        : "",
-      config.finalistSamples < config.screeningSamples
-        ? "Finalist sampling budget is lower than screening — rankings will stay uncertain."
-        : "",
-    ].filter(Boolean),
+    isLive
+      ? [
+          ...liveErrors,
+          protectedMotifError
+            ? `Protected motif could not be read from the backend: ${protectedMotifError}`
+            : "",
+        ].filter(Boolean)
+      : [
+          demoConfig.populationSize * demoConfig.generations > 600
+            ? "Large search space: compute estimates become unreliable."
+            : "",
+          demoConfig.finalistSamples < demoConfig.screeningSamples
+            ? "Finalist sampling budget is lower than screening — rankings will stay uncertain."
+            : "",
+        ].filter(Boolean),
     [],
   ];
 
@@ -145,14 +251,27 @@ function NewExperiment() {
     step === 0
       ? !input.experimentName || sequenceLength < 20 || invalidChars.length > 0
       : step === 1
-        ? !target.objectiveText || !target.targetStateDescription
-        : false;
+        ? !target.objectiveText || !target.targetStateDescription || Boolean(liveRegionError)
+        : step === 2 && isLive
+          ? liveErrors.length > 0
+          : false;
 
-  const computeEstimate = Math.round(
-    (config.populationSize * config.generations * config.screeningSamples) / 600,
+  const demoComputeEstimate = Math.round(
+    (demoConfig.populationSize * demoConfig.generations * demoConfig.screeningSamples) / 600,
   );
+  const liveScoringPasses =
+    liveConfig.populationSize * liveConfig.generations +
+    liveConfig.maxFinalists * Math.max(1, liveConfig.finalistRescoreSeeds.length);
 
   async function launch() {
+    if (isLive && !liveConfig.acknowledgeExperimentalProxy) {
+      toast.error("Acknowledge the experimental-proxy limitation before launching a live run.");
+      return;
+    }
+    if (isLive && liveErrors.length > 0) {
+      toast.error("Fix the live configuration before launching", { description: liveErrors[0] });
+      return;
+    }
     setLaunching(true);
     try {
       const experiment = await api.createExperiment({
@@ -161,8 +280,10 @@ function NewExperiment() {
         config,
         executionMode,
       });
-      toast.success(`${executionMode === "live" ? "Live" : "Demo"} run ${experiment.id} queued`, {
-        description: executionMode === "live" ? "The backend will record real status and errors." : "Simulated pipeline — no sampling job was dispatched.",
+      toast.success(`${isLive ? "Live" : "Demo"} run ${experiment.id} queued`, {
+        description: isLive
+          ? "The backend records real status and errors; the interface shows only measured values."
+          : "Simulated pipeline — no sampling job was dispatched.",
       });
       void navigate({
         to: "/experiments/$experimentId",
@@ -181,7 +302,7 @@ function NewExperiment() {
     <div className="mx-auto max-w-4xl space-y-5">
       <PageHeader
         title="New experiment"
-        description="Define the protein, the desired conformational landscape and the search budget. Validation here is frontend-only; scientific validation happens in the future backend."
+        description="Define the protein, the desired conformational landscape and the search budget. This form validates inputs locally; the backend re-validates every field and rejects unsupported combinations instead of clamping them."
       />
 
       <ol className="flex flex-wrap gap-2">
@@ -199,7 +320,9 @@ function NewExperiment() {
                     : "border-border bg-surface text-muted-foreground/60",
               )}
             >
-              <span className="font-mono">{index < step ? <Check className="size-3" /> : index + 1}</span>
+              <span className="font-mono">
+                {index < step ? <Check className="size-3" /> : index + 1}
+              </span>
               {label}
             </button>
           </li>
@@ -214,8 +337,10 @@ function NewExperiment() {
               [
                 "Provide the parent amino-acid sequence to evolve.",
                 "Describe the conformational state you want to enrich.",
-                "Bound the genetic algorithm and the sampling budget.",
-                "Confirm inputs before starting the simulated run.",
+                isLive
+                  ? "Bound the live genetic algorithm and the fixed-seed ProteinMPNN scoring plan."
+                  : "Bound the genetic algorithm and the simulated sampling budget.",
+                "Confirm inputs before starting the run.",
               ][step]
             }
           </CardDescription>
@@ -299,13 +424,23 @@ function NewExperiment() {
               <div className="space-y-2">
                 <Label>Reference PDB (optional)</Label>
                 <div className="flex items-center gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={() => pdbRef.current?.click()}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => pdbRef.current?.click()}
+                  >
                     <Upload className="size-3.5" /> Upload PDB
                   </Button>
                   <span className="text-xs text-muted-foreground">
                     {input.referencePdbName ?? "No file selected"}
                   </span>
                 </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {isLive
+                    ? "Live runs score against the prepared 4AKE/1AKE chain-A references on the backend; an uploaded PDB is recorded but is not used as a scoring reference."
+                    : "Illustrative only in demo mode."}
+                </p>
                 <input
                   ref={pdbRef}
                   type="file"
@@ -368,7 +503,10 @@ function NewExperiment() {
                   <Select
                     value={target.structuralMetric}
                     onValueChange={(value) =>
-                      setTarget({ ...target, structuralMetric: value as TargetLandscape["structuralMetric"] })
+                      setTarget({
+                        ...target,
+                        structuralMetric: value as TargetLandscape["structuralMetric"],
+                      })
                     }
                   >
                     <SelectTrigger className="bg-surface">
@@ -402,11 +540,28 @@ function NewExperiment() {
                     id="region"
                     value={target.residueRegion}
                     onChange={(e) => setTarget({ ...target, residueRegion: e.target.value })}
-                    placeholder="180-215"
+                    placeholder="118-160"
                     className="bg-surface font-mono"
                   />
+                  {isLive && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Validated against the prepared 4AKE chain A numbering
+                      {referenceResidueCount != null ? ` (1-${referenceResidueCount})` : ""}. It is
+                      recorded but not applied as a scoring constraint.
+                    </p>
+                  )}
                 </div>
               </div>
+              {isLive && (target.structuralMetric as string) !== "target_preference" && (
+                <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
+                  <p className="font-medium text-warning">Requested metric will not be computed</p>
+                  <p className="mt-1">
+                    The live evaluator measures ProteinMPNN target preference (backbone
+                    compatibility), not {target.structuralMetric.replace(/_/g, " ")}. This run will
+                    record the requested metric as uncomputed rather than fabricate values.
+                  </p>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="preserve">Preservation constraints</Label>
                 <Input
@@ -422,18 +577,18 @@ function NewExperiment() {
               <div className="rounded-md border border-border bg-surface p-3 text-xs">
                 <p className="mb-2 font-medium">Structured objective summary</p>
                 <pre className="overflow-x-auto font-mono text-[11px] text-muted-foreground">
-{JSON.stringify(
-  {
-    target_state: target.targetStateDescription || null,
-    undesired_state: target.undesiredStateDescription || null,
-    metric: target.structuralMetric,
-    threshold_angstrom: target.thresholdAngstrom,
-    region: target.residueRegion || null,
-    preserve: target.preservationConstraints || null,
-  },
-  null,
-  2,
-)}
+                  {JSON.stringify(
+                    {
+                      target_state: target.targetStateDescription || null,
+                      undesired_state: target.undesiredStateDescription || null,
+                      metric: target.structuralMetric,
+                      threshold_angstrom: target.thresholdAngstrom,
+                      region: target.residueRegion || null,
+                      preserve: target.preservationConstraints || null,
+                    },
+                    null,
+                    2,
+                  )}
                 </pre>
               </div>
             </>
@@ -441,94 +596,379 @@ function NewExperiment() {
 
           {step === 2 && (
             <>
-              <div className="grid gap-4 md:grid-cols-3">
-                {(
-                  [
-                    ["populationSize", "Population size", "Individuals evaluated per generation."],
-                    ["generations", "Generations", "Number of evolutionary rounds."],
-                    ["maxSubstitutions", "Max substitutions", "Upper bound on mutations vs the parent sequence."],
-                    ["screeningSamples", "Screening samples", "Conformations sampled per screened candidate."],
-                    ["finalistSamples", "Finalist samples", "Larger budget for shortlisted candidates."],
-                  ] as const
-                ).map(([key, label, hint]) => (
-                  <div key={key} className="space-y-2">
-                    <Label htmlFor={key}>
-                      {label}
-                      <Hint text={hint} />
-                    </Label>
-                    <Input
-                      id={key}
-                      type="number"
-                      min={1}
-                      value={config[key]}
-                      onChange={(e) => setConfig({ ...config, [key]: Number(e.target.value) })}
-                      className="bg-surface font-mono"
-                    />
-                  </div>
-                ))}
-                <div className="space-y-2">
-                  <Label>Mutation strategy</Label>
-                  <Select
-                    value={config.mutationStrategy}
-                    onValueChange={(value) =>
-                      setConfig({ ...config, mutationStrategy: value as SearchConfig["mutationStrategy"] })
-                    }
+              <div className="rounded-md border border-border bg-surface p-3">
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Execution mode
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={executionMode === "demo" ? "default" : "outline"}
+                    onClick={() => setExecutionMode("demo")}
                   >
-                    <SelectTrigger className="bg-surface">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="conservative">Conservative substitutions</SelectItem>
-                      <SelectItem value="balanced">Balanced</SelectItem>
-                      <SelectItem value="exploratory">Exploratory</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    Demo
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={executionMode === "live" ? "default" : "outline"}
+                    disabled={isDemoMode}
+                    onClick={() => setExecutionMode("live")}
+                  >
+                    Live
+                  </Button>
                 </div>
-              </div>
-
-              <div className="space-y-3">
-                <Label>Diversity preference — {config.diversityPreference}%</Label>
-                <Slider
-                  value={[config.diversityPreference]}
-                  min={0}
-                  max={100}
-                  step={5}
-                  onValueChange={([value]) => setConfig({ ...config, diversityPreference: value ?? 0 })}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Higher values keep the population spread out; lower values exploit the current best
-                  lineage.
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  {isDemoMode
+                    ? "Set VITE_API_BASE_URL to enable the local live backend."
+                    : isLive
+                      ? "Live runs use the prepared 4AKE/1AKE chain-A benchmark. 1AKE is AP5A-bound; target preference is an experimental ProteinMPNN proxy."
+                      : "Demo results are simulated — no sampling job or agent call is dispatched."}
                 </p>
               </div>
+              {isLive ? (
+                <>
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="live-population">
+                        Population size
+                        <Hint text="Live runs support 2 to 8 candidates per generation. Values outside this range are rejected, never clamped." />
+                      </Label>
+                      <Input
+                        id="live-population"
+                        type="number"
+                        min={2}
+                        max={8}
+                        value={liveConfig.populationSize}
+                        onChange={(e) =>
+                          setLiveConfig({ ...liveConfig, populationSize: Number(e.target.value) })
+                        }
+                        className="bg-surface font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="live-generations">
+                        Generations
+                        <Hint text="Live runs support 1 or 2 generations." />
+                      </Label>
+                      <Input
+                        id="live-generations"
+                        type="number"
+                        min={1}
+                        max={2}
+                        value={liveConfig.generations}
+                        onChange={(e) =>
+                          setLiveConfig({ ...liveConfig, generations: Number(e.target.value) })
+                        }
+                        className="bg-surface font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="live-substitutions">
+                        Max substitutions
+                        <Hint text="Upper bound on mutations vs the parent sequence." />
+                      </Label>
+                      <Input
+                        id="live-substitutions"
+                        type="number"
+                        min={0}
+                        value={liveConfig.maxSubstitutions}
+                        onChange={(e) =>
+                          setLiveConfig({ ...liveConfig, maxSubstitutions: Number(e.target.value) })
+                        }
+                        className="bg-surface font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="live-budget">
+                        Candidate evaluation budget
+                        <Hint text="Maximum number of ProteinMPNN scoring passes the run may spend." />
+                      </Label>
+                      <Input
+                        id="live-budget"
+                        type="number"
+                        min={1}
+                        value={liveConfig.candidateEvaluationBudget}
+                        onChange={(e) =>
+                          setLiveConfig({
+                            ...liveConfig,
+                            candidateEvaluationBudget: Number(e.target.value),
+                          })
+                        }
+                        className="bg-surface font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="live-max-finalists">
+                        Max finalists
+                        <Hint text="Shortlisted candidates re-scored under every finalist seed." />
+                      </Label>
+                      <Input
+                        id="live-max-finalists"
+                        type="number"
+                        min={1}
+                        value={liveConfig.maxFinalists}
+                        onChange={(e) =>
+                          setLiveConfig({ ...liveConfig, maxFinalists: Number(e.target.value) })
+                        }
+                        className="bg-surface font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="live-screening-seed">
+                        Screening seed
+                        <Hint text="Fixed seed for the ProteinMPNN screen pass; results are reproducible." />
+                      </Label>
+                      <Input
+                        id="live-screening-seed"
+                        type="number"
+                        value={liveConfig.screeningSeed}
+                        onChange={(e) =>
+                          setLiveConfig({ ...liveConfig, screeningSeed: Number(e.target.value) })
+                        }
+                        className="bg-surface font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label htmlFor="live-finalist-seeds">
+                        Finalist rescore seeds
+                        <Hint text="Comma-separated fixed seeds used to audit finalist robustness." />
+                      </Label>
+                      <Input
+                        id="live-finalist-seeds"
+                        value={liveConfig.finalistRescoreSeeds.join(", ")}
+                        onChange={(e) =>
+                          setLiveConfig({
+                            ...liveConfig,
+                            finalistRescoreSeeds: e.target.value
+                              .split(",")
+                              .map((token) => Number(token.trim()))
+                              .filter((value) => Number.isFinite(value)),
+                          })
+                        }
+                        className="bg-surface font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Mutation strategy</Label>
+                      <Select
+                        value={liveConfig.mutationStrategy}
+                        onValueChange={(value) =>
+                          setLiveConfig({
+                            ...liveConfig,
+                            mutationStrategy: value as MutationStrategy,
+                          })
+                        }
+                      >
+                        <SelectTrigger className="bg-surface">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {MUTATION_STRATEGIES.map((strategy) => (
+                            <SelectItem key={strategy.value} value={strategy.value}>
+                              {strategy.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
 
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowAdvanced((v) => !v)}
-              >
-                {showAdvanced ? "Hide" : "Show"} advanced settings
-              </Button>
-              {showAdvanced && (
-                <div className="space-y-2">
-                  <Label htmlFor="seed">Random seed</Label>
-                  <Input
-                    id="seed"
-                    type="number"
-                    value={config.randomSeed}
-                    onChange={(e) => setConfig({ ...config, randomSeed: Number(e.target.value) })}
-                    className="w-40 bg-surface font-mono"
-                  />
-                </div>
+                  <div className="space-y-3">
+                    <Label>Diversity preference — {liveConfig.diversityPreference}%</Label>
+                    <Slider
+                      value={[liveConfig.diversityPreference]}
+                      min={0}
+                      max={100}
+                      step={5}
+                      onValueChange={([value]) =>
+                        setLiveConfig({ ...liveConfig, diversityPreference: value ?? 0 })
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Higher values keep the population spread out; lower values exploit the current
+                      best lineage.
+                    </p>
+                  </div>
+
+                  <div className="rounded-md border border-border bg-surface p-3 text-xs">
+                    <p className="font-medium">Protected P-loop motif</p>
+                    {protectedMotif ? (
+                      <>
+                        <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                          {protectedMotif.name} · residues {protectedMotif.positions[0]}–
+                          {protectedMotif.positions[protectedMotif.positions.length - 1]} ·{" "}
+                          {protectedMotif.residues}
+                        </p>
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {protectedMotif.source}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {protectedMotifError
+                          ? `Unavailable: ${protectedMotifError}`
+                          : "Reading authoritative motif from the prepared 4AKE chain A…"}
+                      </p>
+                    )}
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      The backend enforces these positions from authoritative annotations; the
+                      interface cannot weaken this constraint.
+                    </p>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowAdvanced((v) => !v)}
+                  >
+                    {showAdvanced ? "Hide" : "Show"} advanced settings
+                  </Button>
+                  {showAdvanced && (
+                    <div className="space-y-2">
+                      <Label htmlFor="live-random-seed">Random seed</Label>
+                      <Input
+                        id="live-random-seed"
+                        type="number"
+                        value={liveConfig.randomSeed}
+                        onChange={(e) =>
+                          setLiveConfig({ ...liveConfig, randomSeed: Number(e.target.value) })
+                        }
+                        className="w-40 bg-surface font-mono"
+                      />
+                    </div>
+                  )}
+
+                  <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
+                    <p className="font-medium text-foreground">Live scoring plan</p>
+                    <p className="mt-1">
+                      ≈ {liveScoringPasses} ProteinMPNN scoring passes within a budget of{" "}
+                      {liveConfig.candidateEvaluationBudget}. These are local model evaluations, not
+                      BioEmu conformational samples.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid gap-4 md:grid-cols-3">
+                    {(
+                      [
+                        [
+                          "populationSize",
+                          "Population size",
+                          "Individuals evaluated per generation.",
+                        ],
+                        ["generations", "Generations", "Number of evolutionary rounds."],
+                        [
+                          "maxSubstitutions",
+                          "Max substitutions",
+                          "Upper bound on mutations vs the parent sequence.",
+                        ],
+                        [
+                          "screeningSamples",
+                          "Screening samples",
+                          "Conformations sampled per screened candidate.",
+                        ],
+                        [
+                          "finalistSamples",
+                          "Finalist samples",
+                          "Larger budget for shortlisted candidates.",
+                        ],
+                      ] as const
+                    ).map(([key, label, hint]) => (
+                      <div key={key} className="space-y-2">
+                        <Label htmlFor={key}>
+                          {label}
+                          <Hint text={hint} />
+                        </Label>
+                        <Input
+                          id={key}
+                          type="number"
+                          min={1}
+                          value={demoConfig[key]}
+                          onChange={(e) =>
+                            setDemoConfig({ ...demoConfig, [key]: Number(e.target.value) })
+                          }
+                          className="bg-surface font-mono"
+                        />
+                      </div>
+                    ))}
+                    <div className="space-y-2">
+                      <Label>Mutation strategy</Label>
+                      <Select
+                        value={demoConfig.mutationStrategy}
+                        onValueChange={(value) =>
+                          setDemoConfig({
+                            ...demoConfig,
+                            mutationStrategy: value as SearchConfig["mutationStrategy"],
+                          })
+                        }
+                      >
+                        <SelectTrigger className="bg-surface">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {MUTATION_STRATEGIES.map((strategy) => (
+                            <SelectItem key={strategy.value} value={strategy.value}>
+                              {strategy.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Label>Diversity preference — {demoConfig.diversityPreference}%</Label>
+                    <Slider
+                      value={[demoConfig.diversityPreference]}
+                      min={0}
+                      max={100}
+                      step={5}
+                      onValueChange={([value]) =>
+                        setDemoConfig({ ...demoConfig, diversityPreference: value ?? 0 })
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Higher values keep the population spread out; lower values exploit the current
+                      best lineage.
+                    </p>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowAdvanced((v) => !v)}
+                  >
+                    {showAdvanced ? "Hide" : "Show"} advanced settings
+                  </Button>
+                  {showAdvanced && (
+                    <div className="space-y-2">
+                      <Label htmlFor="seed">Random seed</Label>
+                      <Input
+                        id="seed"
+                        type="number"
+                        value={demoConfig.randomSeed}
+                        onChange={(e) =>
+                          setDemoConfig({ ...demoConfig, randomSeed: Number(e.target.value) })
+                        }
+                        className="w-40 bg-surface font-mono"
+                      />
+                    </div>
+                  )}
+
+                  <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
+                    <p className="font-medium text-foreground">Provisional compute estimate</p>
+                    <p className="mt-1">
+                      ≈ {demoComputeEstimate} GPU-minutes on the future sampling worker. This figure
+                      is a rough placeholder and must not be used for capacity planning.
+                    </p>
+                  </div>
+                </>
               )}
-
-              <div className="rounded-md border border-dashed border-border bg-surface p-3 text-xs text-muted-foreground">
-                <p className="font-medium text-foreground">Provisional compute estimate</p>
-                <p className="mt-1">
-                  ≈ {computeEstimate} GPU-minutes on the future sampling worker. This figure is a
-                  rough placeholder and must not be used for capacity planning.
-                </p>
-              </div>
             </>
           )}
 
@@ -549,8 +989,9 @@ function NewExperiment() {
                   <p className="text-xs uppercase tracking-wider text-muted-foreground">Target</p>
                   <p className="mt-1 text-xs">{target.objectiveText}</p>
                   <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-                    {target.structuralMetric} ≥ {target.thresholdAngstrom} Å · residues{" "}
-                    {target.residueRegion || "unspecified"}
+                    {isLive
+                      ? `${target.structuralMetric} (not computed in live mode) · residues ${target.residueRegion || "unspecified"} (recorded, not applied)`
+                      : `${target.structuralMetric} ≥ ${target.thresholdAngstrom} Å · residues ${target.residueRegion || "unspecified"}`}
                   </p>
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     Preserve: {target.preservationConstraints || "none declared"}
@@ -558,17 +999,36 @@ function NewExperiment() {
                 </div>
               </div>
               <div className="rounded-md border border-border bg-surface p-3">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Execution mode</p>
-                <div className="mt-2 flex gap-2">
-                  <Button type="button" size="sm" variant={executionMode === "demo" ? "default" : "outline"} onClick={() => setExecutionMode("demo")}>Demo</Button>
-                  <Button type="button" size="sm" variant={executionMode === "live" ? "default" : "outline"} disabled={isDemoMode} onClick={() => setExecutionMode("live")}>Live</Button>
-                </div>
-                <p className="mt-2 text-[11px] text-muted-foreground">{isDemoMode ? "Set VITE_API_BASE_URL to enable the local live backend." : executionMode === "live" ? "Live runs use the prepared 4AKE/1AKE chain-A benchmark. 1AKE is AP5A-bound; target preference is an experimental ProteinMPNN proxy." : "Demo results are simulated."}</p>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Execution mode
+                </p>
+                <p className="mt-1 text-sm font-medium">
+                  {isLive ? "Live computational run" : "Simulated demo run"}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {isDemoMode
+                    ? "Set VITE_API_BASE_URL to enable the local live backend."
+                    : isLive
+                      ? "Live runs use the prepared 4AKE/1AKE chain-A benchmark. 1AKE is AP5A-bound; target preference is an experimental ProteinMPNN proxy."
+                      : "Demo results are simulated."}
+                </p>
               </div>
-              {executionMode === "live" && (
+              {isLive && (
                 <label className="flex gap-2 rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
-                  <input type="checkbox" checked={Boolean(config.acknowledgeExperimentalProxy)} onChange={(event) => setConfig({ ...config, acknowledgeExperimentalProxy: event.target.checked, enableExperimentalProxySelection: event.target.checked })} />
-                  I acknowledge that target preference is an unvalidated model-based backbone-compatibility proxy, not biological fitness, stability, affinity, or conformational occupancy.
+                  <input
+                    type="checkbox"
+                    checked={liveConfig.acknowledgeExperimentalProxy}
+                    onChange={(event) =>
+                      setLiveConfig({
+                        ...liveConfig,
+                        acknowledgeExperimentalProxy: event.target.checked,
+                        enableExperimentalProxySelection: event.target.checked,
+                      })
+                    }
+                  />
+                  I acknowledge that target preference is an unvalidated model-based
+                  backbone-compatibility proxy, not biological fitness, stability, affinity, or
+                  conformational occupancy.
                 </label>
               )}
               <div className="rounded-md border border-border bg-surface p-3">
@@ -579,8 +1039,19 @@ function NewExperiment() {
                   <span>population = {config.populationSize}</span>
                   <span>generations = {config.generations}</span>
                   <span>max_substitutions = {config.maxSubstitutions}</span>
-                  <span>screening_samples = {config.screeningSamples}</span>
-                  <span>finalist_samples = {config.finalistSamples}</span>
+                  {isLive ? (
+                    <>
+                      <span>screening_seed = {liveConfig.screeningSeed}</span>
+                      <span>finalist_seeds = [{liveConfig.finalistRescoreSeeds.join(", ")}]</span>
+                      <span>max_finalists = {liveConfig.maxFinalists}</span>
+                      <span>evaluation_budget = {liveConfig.candidateEvaluationBudget}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>screening_samples = {demoConfig.screeningSamples}</span>
+                      <span>finalist_samples = {demoConfig.finalistSamples}</span>
+                    </>
+                  )}
                   <span>strategy = {config.mutationStrategy}</span>
                   <span>diversity = {config.diversityPreference}%</span>
                   <span>seed = {config.randomSeed}</span>
@@ -590,7 +1061,9 @@ function NewExperiment() {
               <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
                 <p className="font-medium text-warning">Scientific limitations</p>
                 <p className="mt-1">
-                  {executionMode === "live" ? "ProteinMPNN scores are computational compatibility proxies. They do not establish biological function, stability, affinity, free energy or conformational occupancy." : "This run is simulated: no BioEmu sampling and no Gemma agent execution take place, and all resulting metrics are illustrative."}
+                  {executionMode === "live"
+                    ? "ProteinMPNN scores are computational compatibility proxies. They do not establish biological function, stability, affinity, free energy or conformational occupancy."
+                    : "This run is simulated: no BioEmu sampling and no Gemma agent execution take place, and all resulting metrics are illustrative."}
                 </p>
               </div>
             </div>
@@ -613,8 +1086,12 @@ function NewExperiment() {
             Continue <ChevronRight className="size-4" />
           </Button>
         ) : (
-          <Button onClick={launch} disabled={launching || (executionMode === "live" && !config.acknowledgeExperimentalProxy)}>
-            <Rocket className="size-4" /> {launching ? "Starting…" : executionMode === "live" ? "Start live run" : "Start demo run"}
+          <Button
+            onClick={launch}
+            disabled={launching || (isLive && !liveConfig.acknowledgeExperimentalProxy)}
+          >
+            <Rocket className="size-4" />{" "}
+            {launching ? "Starting…" : isLive ? "Start live run" : "Start demo run"}
           </Button>
         )}
       </div>

@@ -12,9 +12,16 @@ from typing import Any
 from uuid import uuid4
 
 from .repository import SQLiteExperimentRepository
-from .schemas import AgentEvent, Candidate, EvidenceOrigin, Experiment, ExperimentStatus, Provenance, ReportingStatus
+from .schemas import AgentEvent, Candidate, EvidenceOrigin, Experiment, ExperimentStatus, LiveSearchConfig, Provenance, ReportingStatus, SearchConfig
 from .reporting import EvidenceReportBuilder
 from .settings import Settings
+from .annotations import (
+    cross_check_preservation_constraints,
+    load_reference,
+    resolve_protected_positions,
+    verify_reference_numbering,
+    verify_residue_region,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -199,6 +206,40 @@ class LiveWorkflow:
         if call["name"] != expected_tool: raise LiveWorkflowError(role + " requested an unauthorized tool")
         return call
 
+    def execution_settings(self, experiment: Experiment) -> dict[str, Any]:
+        """Resolve the exact bounded execution settings for a live experiment."""
+        config = experiment.config
+        if isinstance(config, LiveSearchConfig):
+            return {
+                "population": config.population_size,
+                "generations": config.generations,
+                "screening_seed": config.screening_seed,
+                "finalist_seeds": list(config.finalist_rescore_seeds),
+                "max_finalists": config.max_finalists,
+                "evaluation_budget": config.candidate_evaluation_budget,
+                "protected_positions": list(config.protected_positions or ()),
+                "origin": "declared_live_config",
+            }
+        # Legacy live experiments persisted before the live schema existed.
+        return {
+            "population": min(config.population_size, 8),
+            "generations": min(config.generations, 2),
+            "screening_seed": 17,
+            "finalist_seeds": [23, 41],
+            "max_finalists": 3,
+            "evaluation_budget": min(max(config.population_size, 1), 8),
+            "protected_positions": [],
+            "origin": "legacy_bounded_defaults",
+        }
+
+    def _protected_positions(self, experiment: Experiment, settings: dict[str, Any]) -> tuple[int, ...]:
+        annotation = load_reference(Path(self.settings.prepared_structures), "4AKE")
+        verify_reference_numbering(annotation, experiment.input.sequence)
+        cross_check_preservation_constraints(experiment.target.preservation_constraints, annotation)
+        verify_residue_region(experiment.target.residue_region, annotation)
+        resolved = resolve_protected_positions(annotation, settings["protected_positions"] or None)
+        return tuple(int(position) for position in resolved["positions"])
+
     def run(self, experiment_id: str) -> None:
         experiment = self.repository.get(experiment_id)
         if experiment is None or experiment.status is ExperimentStatus.cancelled:
@@ -206,36 +247,108 @@ class LiveWorkflow:
         try:
             if not experiment.config.acknowledge_experimental_proxy:
                 raise LiveWorkflowError("live proxy search requires acknowledgeExperimentalProxy=true")
-            experiment.status = ExperimentStatus.running; self.repository.replace(experiment)
+            execution = self.execution_settings(experiment)
+            experiment.status = ExperimentStatus.running
+            self.repository.replace(experiment)
+
+            # The Landscape Interpreter task is recorded first so a missing server
+            # credential fails fast and visibly, before any reference work begins.
             self.invoke_role(experiment, "Landscape Interpreter", {"sequence_length": len(experiment.input.sequence), "benchmark": "4AKE/1AKE chain A"}, "validate_landscape")
-            self.event(experiment, "tool_result", "validated prepared 4AKE/1AKE chain-A reference mapping", {"coverage": 214, "limitation": "1AKE is AP5A inhibitor-bound; proxy is not an apo equilibrium measurement"})
-            self.invoke_role(experiment, "Search Strategist", {"population_limit": min(experiment.config.population_size, 8), "generation_limit": min(experiment.config.generations, 2)}, "generate_candidates")
-            candidates = self._generate_candidates(experiment)
-            self.repository.add_candidates(candidates)
-            self.event(experiment, "tool_result", "generated bounded candidate population", {"count": len(candidates)})
-            self.invoke_role(experiment, "Evolution Coordinator", {"candidate_count": len(candidates), "selection_enabled": experiment.config.enable_experimental_proxy_selection}, "score_candidate_batch")
-            self.event(experiment, "agent_task", "Ensemble Analysis Worker is executing deterministic ProteinMPNN batch scoring.", {"role": "Ensemble Analysis Worker", "tool": "score_candidate_batch", "seed": 17})
-            scored = self._score(experiment, candidates, 17)
-            self.repository.add_candidates(scored)
-            self.event(experiment, "tool_result", "completed target and off-target ProteinMPNN screening", {"seed": 17, "count": len(scored)})
+            protected = self._protected_positions(experiment, execution)
+            self.event(experiment, "tool_result", "validated prepared 4AKE/1AKE chain-A reference mapping", {"coverage": len(experiment.input.sequence), "protectedPositions": list(protected), "limitation": "1AKE is AP5A inhibitor-bound; proxy is not an apo equilibrium measurement"})
+            self.event(
+                experiment,
+                "decision",
+                "effective live execution configuration resolved before candidate generation",
+                {
+                    "population": execution["population"],
+                    "generations": execution["generations"],
+                    "screeningSeed": execution["screening_seed"],
+                    "finalistRescoreSeeds": execution["finalist_seeds"],
+                    "maxFinalists": execution["max_finalists"],
+                    "candidateEvaluationBudget": execution["evaluation_budget"],
+                    "protectedPositions": list(protected),
+                    "source": execution["origin"],
+                },
+                model_generated=False,
+            )
+            metric_warning = self._unsupported_metric_warning(experiment)
+            if metric_warning:
+                experiment.warnings = [metric_warning]
+                self.repository.replace(experiment)
+                self.event(experiment, "warning", metric_warning, {"requestedMetric": experiment.target.structural_metric}, model_generated=False)
+
+            from proteva_ga.evaluator import FitnessRecord
+
+            self.invoke_role(
+                experiment,
+                "Search Strategist",
+                {
+                    "population_limit": execution["population"],
+                    "generation_limit": execution["generations"],
+                    "protected_positions": list(protected),
+                },
+                "generate_candidates",
+            )
+
+            ga = self._ga(experiment, execution, protected)
+            seed_candidates = [self._to_candidate(experiment, proposal) for proposal in ga.initialize().candidates]
+            self.repository.add_candidates(seed_candidates)
+            self.event(experiment, "tool_result", "generated bounded candidate population with protected positions enforced", {"count": len(seed_candidates), "protectedPositions": list(protected)})
+
+            self.invoke_role(experiment, "Evolution Coordinator", {"candidate_count": len(seed_candidates), "selection_enabled": experiment.config.enable_experimental_proxy_selection}, "score_candidate_batch")
+            self.event(experiment, "agent_task", "Ensemble Analysis Worker is executing deterministic ProteinMPNN batch scoring.", {"role": "Ensemble Analysis Worker", "tool": "score_candidate_batch", "seed": execution["screening_seed"]})
+            evaluated = self._score(experiment, seed_candidates, execution["screening_seed"])
+            self.repository.add_candidates(evaluated)
+            self.event(experiment, "tool_result", "completed target and off-target ProteinMPNN screening", {"seed": execution["screening_seed"], "count": len(evaluated)})
+
+            if execution["generations"] > 1:
+                records = [
+                    FitnessRecord(candidate_id=item.id, score=item.target_preference, evaluator_name="proteinmpnn_target_preference")
+                    for item in evaluated
+                ]
+                evolved = [self._to_candidate(experiment, proposal) for proposal in ga.advance(records).candidates]
+                self.repository.add_candidates(evolved)
+                self.event(experiment, "decision", "evolutionary step selected parents from measured target preference", {"generation": 1, "count": len(evolved)})
+                evolved_scored = self._score(experiment, evolved, execution["screening_seed"])
+                self.repository.add_candidates(evolved_scored)
+                self.event(experiment, "tool_result", "completed ProteinMPNN screening for evolved generation", {"seed": execution["screening_seed"], "count": len(evolved_scored)})
+                evaluated = evaluated + evolved_scored
+
             if experiment.config.enable_experimental_proxy_selection:
-                finalists = sorted(scored, key=lambda item: item.target_preference if item.target_preference is not None else float("-inf"), reverse=True)[: min(3, len(scored))]
+                finalists = sorted(evaluated, key=lambda item: item.target_preference if item.target_preference is not None else float("-inf"), reverse=True)[: min(execution["max_finalists"], len(evaluated))]
                 self.event(experiment, "coordinator_decision", "Experimental proxy selection is enabled; finalists use target_preference.", {"metric": "target_preference", "candidate_ids": [item.id for item in finalists]})
             else:
-                finalists = scored[: min(3, len(scored))]
+                finalists = evaluated[: min(execution["max_finalists"], len(evaluated))]
                 self.event(experiment, "warning", "Experimental proxy selection is disabled; stable proposal order was used only for robustness auditing.", {"candidate_ids": [item.id for item in finalists]})
-            self.invoke_role(experiment, "Evolution Coordinator", {"screened": len(scored), "finalists": [item.id for item in finalists]}, "rescore_finalists")
-            rescored = self._rescore(experiment, finalists)
+            self.invoke_role(experiment, "Evolution Coordinator", {"screened": len(evaluated), "finalists": [item.id for item in finalists]}, "rescore_finalists")
+            rescored = self._rescore(experiment, finalists, execution["finalist_seeds"])
             self.repository.add_candidates(rescored)
-            self.invoke_role(experiment, "Scientific Auditor", {"finalists": [item.id for item in rescored], "seeds": [17, 23, 41]}, "record_audit_result")
-            audited = [item.model_copy(update={"audit": {"status": "reviewed", "warning": "ProteinMPNN target preference is an unvalidated model proxy; 1AKE is inhibitor-bound."}}) for item in rescored]
+            audit_seeds = [execution["screening_seed"], *execution["finalist_seeds"]]
+            self.invoke_role(experiment, "Scientific Auditor", {"finalists": [item.id for item in rescored], "seeds": audit_seeds}, "record_audit_result")
+            audited = [item.model_copy(update={"audit": {"status": "reviewed", "warning": "ProteinMPNN target preference is an unvalidated model proxy; 1AKE is inhibitor-bound.", "seeds": audit_seeds}}) for item in rescored]
             self.repository.add_candidates(audited)
-            self.event(experiment, "audit", "auditor recorded proxy limitations and seed sensitivity", {"status": "reviewed"})
-            experiment.status = ExperimentStatus.completed; experiment.current_generation = 1; experiment.candidate_count = len(scored); experiment.requires_review = len(audited); experiment.warnings = ["ProteinMPNN target preference is an experimental compatibility proxy, not biological fitness."]; experiment.reporting_status = ReportingStatus.pending; self.repository.replace(experiment)
+            self.event(experiment, "audit", "auditor recorded proxy limitations and seed sensitivity", {"status": "reviewed", "seeds": audit_seeds})
+            experiment.status = ExperimentStatus.completed
+            experiment.current_generation = execution["generations"]
+            experiment.candidate_count = len(evaluated)
+            experiment.requires_review = len(audited)
+            experiment.warnings = ([metric_warning] if metric_warning else []) + ["ProteinMPNN target preference is an experimental compatibility proxy, not biological fitness."]
+            experiment.reporting_status = ReportingStatus.pending
+            self.repository.replace(experiment)
             self.event(experiment, "decision", "coordinator completed scientific workflow using recorded tool results")
             self.recover_report(experiment.id)
         except Exception as error:
             experiment.status = ExperimentStatus.failed; experiment.error = {"code": "LIVE_WORKFLOW_FAILED", "message": str(error)}; self.repository.replace(experiment); self.event(experiment, "error", "live workflow failed", {"message": str(error)})
+
+    @staticmethod
+    def _unsupported_metric_warning(experiment: Experiment) -> str | None:
+        if experiment.target.structural_metric in {"target_preference", "proteinmpnn_target_preference"}:
+            return None
+        return (
+            "Requested structural metric '" + experiment.target.structural_metric + "' is not computed by the live "
+            "evaluator. Reported results are ProteinMPNN backbone-compatibility target preference only."
+        )
 
     def resume_after_scoring(self, experiment_id: str) -> None:
         """Finish the audit/report stages from persisted measurements only.
@@ -392,11 +505,29 @@ class LiveWorkflow:
                 return {"attemptId":artifact.get("id","evidence"),"path":path,"sha256":expected,"record":record}
         return None
 
-    def _generate_candidates(self, experiment: Experiment) -> list[Candidate]:
+    def _ga(self, experiment: Experiment, execution: dict[str, Any], protected: tuple[int, ...]):
         from proteva_ga.engine import GeneticAlgorithm
         from proteva_ga.models import GAConfig
-        ga = GeneticAlgorithm(experiment.input.sequence, GAConfig(population_size=min(experiment.config.population_size, 8), generations=min(experiment.config.generations, 2), max_substitutions=experiment.config.max_substitutions, random_seed=experiment.config.random_seed))
-        return [Candidate(id=c.id, experimentId=experiment.id, sequence=c.sequence, generation=c.generation, parentId=c.parent_id, mutations=[m.notation for m in c.mutations]) for c in ga.initialize().candidates]
+        return GeneticAlgorithm(
+            experiment.input.sequence,
+            GAConfig(
+                population_size=execution["population"],
+                generations=execution["generations"],
+                max_substitutions=experiment.config.max_substitutions,
+                random_seed=experiment.config.random_seed,
+                protected_positions=tuple(protected),
+            ),
+        )
+
+    def _to_candidate(self, experiment: Experiment, proposal: Any) -> Candidate:
+        return Candidate(
+            id=proposal.id,
+            experimentId=experiment.id,
+            sequence=proposal.sequence,
+            generation=proposal.generation,
+            parentId=proposal.parent_id,
+            mutations=[mutation.notation for mutation in proposal.mutations],
+        )
 
     def _runner(self, seed: int):
         python = self.settings.proteinmpnn_python
@@ -441,14 +572,14 @@ class LiveWorkflow:
             output.append(candidate.model_copy(update={"target_mean_nll": target_score.artifact.mean_negative_log_likelihood, "off_target_mean_nll": off_score.artifact.mean_negative_log_likelihood if off_score else None, "target_preference": preference, "seed_metrics": [metrics], "provenance": Provenance(origin=EvidenceOrigin.computational, producer="ProteinMPNN", modelName="ProteinMPNN", modelVersion=target_score.model_name, sourceArtifactIds=[target_score.artifact.sha256, off_score.artifact.sha256] if off_score else [target_score.artifact.sha256], generatedAt=now())}))
         return output
 
-    def _rescore(self, experiment: Experiment, finalists: list[Candidate]) -> list[Candidate]:
+    def _rescore(self, experiment: Experiment, finalists: list[Candidate], seeds: list[int]) -> list[Candidate]:
         all_metrics = {candidate.id: list(candidate.seed_metrics) for candidate in finalists}
-        for seed in (23, 41):
+        for seed in seeds:
             for candidate in self._score(experiment, finalists, seed): all_metrics[candidate.id].extend(candidate.seed_metrics)
         output=[]
         for candidate in finalists:
             values=[metric.get("value", candidate.target_preference) for metric in all_metrics[candidate.id]]
-            output.append(candidate.model_copy(update={"seed_metrics": all_metrics[candidate.id], "audit": {"seedCount": 3, "targetPreferenceRange": None if not values else [min(values), max(values)]}}))
+            output.append(candidate.model_copy(update={"seed_metrics": all_metrics[candidate.id], "audit": {"seedCount": len(all_metrics[candidate.id]), "targetPreferenceRange": None if not values else [min(values), max(values)]}}))
         return output
 
     def _write_report(self, experiment: Experiment, finalists: list[Candidate]) -> None:

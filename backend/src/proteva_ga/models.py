@@ -16,6 +16,9 @@ class GAConfig:
     random_seed: int
     elite_count: int = 2
     min_sequence_distance: int = 1
+    # One-based positions that must never be mutated (validated against an
+    # authoritative reference annotation before live execution starts).
+    protected_positions: Tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.population_size < 2:
@@ -28,6 +31,10 @@ class GAConfig:
             raise ConfigurationError("elite_count must be between 1 and population_size")
         if self.min_sequence_distance < 0:
             raise ConfigurationError("min_sequence_distance cannot be negative")
+        if len(set(self.protected_positions)) != len(self.protected_positions):
+            raise ConfigurationError("protected_positions must be unique")
+        if any(position < 1 for position in self.protected_positions):
+            raise ConfigurationError("protected_positions are one-based and must be positive")
 
 
 @dataclass(frozen=True)

@@ -35,6 +35,11 @@ class GeneticAlgorithm:
         self._rng = random.Random(config.random_seed)
         self._seen_sequences = {self.seed_sequence}
         self._population: Tuple[Candidate, ...] = ()
+        if any(position > len(self.seed_sequence) for position in config.protected_positions):
+            raise ValueError("protected_positions cannot exceed the seed sequence length")
+        if len(config.protected_positions) >= len(self.seed_sequence):
+            raise ValueError("protected_positions would leave no mutable residue")
+        self._protected = frozenset(config.protected_positions)
 
     @property
     def population(self) -> Tuple[Candidate, ...]:
@@ -103,6 +108,8 @@ class GeneticAlgorithm:
             mutations = mutations_from_seed(self.seed_sequence, sequence)
             if len(mutations) > self.config.max_substitutions:
                 continue
+            if any(mutation.position in self._protected for mutation in mutations):
+                continue
             if sequence in self._seen_sequences:
                 continue
             if not self._is_diverse(sequence, (*existing, *proposals)):
@@ -123,7 +130,10 @@ class GeneticAlgorithm:
         return proposals
 
     def _single_substitution(self, sequence: str) -> str:
-        index = self._rng.randrange(len(sequence))
+        mutable = [index for index in range(len(sequence)) if index + 1 not in self._protected]
+        if not mutable:
+            raise EvolutionError("no mutable positions remain after applying the protected-motif constraint")
+        index = self._rng.choice(mutable)
         alternatives = tuple(residue for residue in STANDARD_AMINO_ACID_CODES if residue != sequence[index])
         residue = self._rng.choice(alternatives)
         return f"{sequence[:index]}{residue}{sequence[index + 1:]}"

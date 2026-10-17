@@ -16,6 +16,8 @@ from .repository import SQLiteExperimentRepository
 from .schemas import ApiError, ExecutionMode, Experiment, ExperimentCreate, ExperimentStatus, ProcurementRequest, ProcurementRequestCreate, ProcurementSpecification
 from .settings import get_settings
 from .live import LiveWorkflow, start_workflow
+from .annotations import REFERENCE_IDS, REFERENCE_METADATA, load_reference, protected_motif_descriptor, reference_file
+from .config_contract import apply_derived_view
 
 settings = get_settings()
 repository = SQLiteExperimentRepository(settings.database_path)
@@ -34,10 +36,23 @@ async def http_error_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
+    messages = []
+    for error in exc.errors()[:4]:
+        location = ".".join(str(part) for part in error.get("loc", ()) if part != "body")
+        message = error.get("msg", "invalid value")
+        messages.append(f"{location}: {message}" if location else message)
+    detail = "; ".join(messages) or "Request does not match the API schema."
     return JSONResponse(
         status_code=422,
-        content={"error": {"code": "REQUEST_VALIDATION_FAILED", "message": "Request does not match the API schema."}},
+        content={"error": {"code": "REQUEST_VALIDATION_FAILED", "message": detail}},
     )
+
+
+def _present(experiment: Experiment) -> Experiment:
+    """Attach derived, non-persisted live display data to an experiment response."""
+    if experiment.execution_mode is not ExecutionMode.live:
+        return experiment
+    return apply_derived_view(experiment, repository.candidates(experiment.id), Path(settings.prepared_structures))
 
 
 @router.get("/health")
@@ -68,12 +83,12 @@ def create_experiment(request: ExperimentCreate):
     repository.add(experiment)
     if request.execution_mode is ExecutionMode.live:
         start_workflow(workflow, experiment.id)
-    return experiment
+    return _present(experiment)
 
 
 @router.get("/experiments", response_model=list[Experiment])
 def list_experiments():
-    return repository.list()
+    return [_present(experiment) for experiment in repository.list()]
 
 
 @router.get("/experiments/{experiment_id}", response_model=Experiment)
@@ -81,7 +96,7 @@ def get_experiment(experiment_id: str):
     experiment = repository.get(experiment_id)
     if experiment is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
-    return experiment
+    return _present(experiment)
 
 
 @router.get("/experiments/{experiment_id}/events", response_model=list)
@@ -163,7 +178,7 @@ def recover_report(experiment_id: str, request: Request):
         workflow.recover_report(experiment_id)
     except Exception as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    return repository.get(experiment_id)
+    return _present(repository.get(experiment_id))
 
 
 @router.post("/experiments/{experiment_id}/resume-after-scoring", response_model=Experiment)
@@ -175,7 +190,7 @@ def resume_after_scoring(experiment_id: str, request: Request):
         workflow.resume_after_scoring(experiment_id)
     except Exception as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    return repository.get(experiment_id)
+    return _present(repository.get(experiment_id))
 
 
 @router.get("/experiments/{experiment_id}/report-attempts", response_model=list)
@@ -189,7 +204,46 @@ def report_attempts(experiment_id: str, request: Request):
 def export_experiment(experiment_id: str):
     experiment = repository.get(experiment_id)
     if experiment is None: raise HTTPException(status_code=404, detail="Experiment not found")
-    return {"experiment": experiment, "candidates": repository.candidates(experiment_id), "events": repository.events(experiment_id), "artifacts": repository.artifacts(experiment_id)}
+    return {"experiment": _present(experiment), "candidates": repository.candidates(experiment_id), "events": repository.events(experiment_id), "artifacts": repository.artifacts(experiment_id)}
+
+
+@router.get("/references")
+def list_references():
+    """Prepared reference structures the live evaluator actually scores against."""
+    references = []
+    for pdb_id in REFERENCE_IDS:
+        metadata = REFERENCE_METADATA[pdb_id]
+        entry = {
+            "pdbId": pdb_id,
+            "label": metadata["label"],
+            "role": metadata["role"],
+            "stateDescription": metadata["stateDescription"],
+            "sourceUrl": metadata["sourceUrl"],
+        }
+        try:
+            annotation = load_reference(Path(settings.prepared_structures), pdb_id)
+        except Exception as error:
+            references.append({**entry, "available": False, "error": str(error), "chain": metadata["chain"]})
+            continue
+        references.append({
+            **entry,
+            "available": True,
+            "chain": annotation.chain,
+            "residueCount": annotation.residue_count,
+            "sha256": annotation.sha256,
+            "coordinatesUrl": f"/api/v1/references/{pdb_id}/coordinates",
+        })
+    return {"references": references, "protectedMotif": protected_motif_descriptor()}
+
+
+@router.get("/references/{pdb_id}/coordinates")
+def reference_coordinates(pdb_id: str):
+    if pdb_id not in REFERENCE_IDS:
+        raise HTTPException(status_code=404, detail="Unknown reference structure")
+    path = reference_file(Path(settings.prepared_structures), pdb_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Prepared reference coordinates are unavailable")
+    return FileResponse(path, filename=path.name, media_type="chemical/x-pdb")
 
 
 @router.post("/experiments/{experiment_id}/procurement/requests", response_model=ProcurementRequest, status_code=201)
@@ -253,6 +307,20 @@ def prepare_procurement_cart(experiment_id: str, request_id: str, payload: dict,
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return result
+
+
+@router.post("/experiments/{experiment_id}/procurement/requests/{request_id}/package")
+def prepare_procurement_package(experiment_id: str, request_id: str, http_request: Request):
+    _require_local_reporting_access(http_request)
+    if repository.get(experiment_id) is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    existing = procurement.repository.get_procurement_request(request_id)
+    if existing is None or existing.experiment_id != experiment_id:
+        raise HTTPException(status_code=404, detail="Procurement request not found")
+    try:
+        return procurement.prepare_package(request_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/experiments/{experiment_id}/procurement/requests/{request_id}/approve", response_model=ProcurementRequest)

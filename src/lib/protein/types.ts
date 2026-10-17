@@ -26,7 +26,8 @@ export interface TargetLandscape {
   objectiveText: string;
   targetStateDescription: string;
   undesiredStateDescription?: string;
-  structuralMetric: "rmsd" | "radius_of_gyration" | "pocket_volume" | "helix_content" | "contact_distance";
+  structuralMetric:
+    "rmsd" | "radius_of_gyration" | "pocket_volume" | "helix_content" | "contact_distance";
   thresholdAngstrom: number;
   residueRegion: string;
   preservationConstraints: string;
@@ -43,6 +44,56 @@ export interface SearchConfig {
   randomSeed: number;
   enableExperimentalProxySelection?: boolean;
   acknowledgeExperimentalProxy?: boolean;
+}
+
+export type MutationStrategy = "conservative" | "balanced" | "exploratory";
+
+/**
+ * Live-execution configuration. There are no BioEmu-style sample counts here:
+ * live runs score candidates with batched ProteinMPNN passes, and the backend
+ * rejects sample-count fields instead of clamping them.
+ */
+export interface LiveSearchConfig {
+  populationSize: number; // 2-8
+  generations: number; // 1-2
+  maxSubstitutions: number;
+  screeningSeed: number;
+  finalistRescoreSeeds: number[];
+  maxFinalists: number;
+  candidateEvaluationBudget: number;
+  mutationStrategy: MutationStrategy;
+  diversityPreference: number; // 0-100
+  randomSeed: number;
+  protectedPositions?: number[] | null;
+  enableExperimentalProxySelection?: boolean;
+  acknowledgeExperimentalProxy?: boolean;
+}
+
+export type ExperimentSearchConfig = SearchConfig | LiveSearchConfig;
+
+/** What the live execution engine actually ran, derived from persisted records. */
+export interface EffectiveSearchConfig {
+  populationSize: number;
+  generations: number;
+  maxSubstitutions: number;
+  screeningSeed: number | null;
+  screeningSeeds: number[];
+  finalistRescoreSeeds: number[];
+  maxFinalists: number;
+  candidatesEvaluated: number;
+  candidateEvaluationBudget: number;
+  mutationStrategy: string;
+  randomSeed: number;
+  protectedPositions: number[];
+  protectedPositionsSource?: string | null;
+  protectedConstraintEnforced: boolean;
+  protectedConstraintViolations: string[];
+  requestedMetric: string;
+  supportedMetric: string;
+  metricSupported: boolean;
+  requestedPopulationSize: number;
+  requestedGenerations: number;
+  source: string;
 }
 
 export interface GenerationStat {
@@ -87,7 +138,8 @@ export type AgentId =
   | "evolution-coordinator"
   | "ensemble-analysis-worker"
   | "scientific-auditor"
-  | "report-agent";
+  | "report-agent"
+  | "procurement-agent";
 
 export type AgentStatus = "idle" | "working" | "waiting" | "blocked" | "done";
 
@@ -103,12 +155,7 @@ export interface Agent {
 }
 
 export type AgentEventKind =
-  | "delegation"
-  | "tool_call"
-  | "result"
-  | "validation_warning"
-  | "decision"
-  | "message";
+  "delegation" | "tool_call" | "result" | "validation_warning" | "decision" | "message";
 
 export interface AgentEvent {
   id: string;
@@ -119,7 +166,7 @@ export interface AgentEvent {
   kind: AgentEventKind;
   summary: string;
   detail?: string;
-  payload?: Record<string, string | number>;
+  payload?: Record<string, unknown>;
 }
 
 export interface Experiment {
@@ -130,7 +177,8 @@ export interface Experiment {
   sequence: string;
   input: SequenceInput;
   target: TargetLandscape;
-  config: SearchConfig;
+  config: ExperimentSearchConfig;
+  effectiveConfig?: EffectiveSearchConfig | null;
   currentGeneration: number;
   candidateCount: number;
   requiresReview: number;
@@ -176,11 +224,7 @@ export interface CandidateQuery {
 }
 
 export type ProcurementProductType =
-  | "catalog_protein"
-  | "custom_protein"
-  | "synthetic_peptide"
-  | "gene_synthesis"
-  | "best_available";
+  "catalog_protein" | "custom_protein" | "synthetic_peptide" | "gene_synthesis" | "best_available";
 
 export interface ProcurementSpecification {
   productType: ProcurementProductType;
@@ -211,7 +255,12 @@ export interface SupplierOption {
   quoteValidUntil?: string;
   estimatedDelivery?: string;
   requiredAccount?: string;
-  matchType: "exact_sequence" | "exact_catalog_identity" | "similar_homolog" | "custom_service" | "no_verified_match";
+  matchType:
+    | "exact_sequence"
+    | "exact_catalog_identity"
+    | "similar_homolog"
+    | "custom_service"
+    | "no_verified_match";
   sequenceIdentity?: number;
   coverage?: number;
   matchEvidence: string[];
@@ -237,11 +286,61 @@ export interface ProcurementRequest {
   updatedAt: string;
 }
 
+/** A prepared reference structure the live evaluator actually scores against. */
+export interface ReferenceStructure {
+  pdbId: string;
+  label: string;
+  role: "target" | "off_target";
+  stateDescription: string;
+  sourceUrl: string;
+  available: boolean;
+  chain?: string;
+  residueCount?: number;
+  sha256?: string;
+  coordinatesUrl?: string;
+  error?: string;
+}
+
+export interface ProtectedMotif {
+  name: string;
+  positions: number[];
+  residues: string;
+  source: string;
+}
+
+export interface ReferenceCatalog {
+  references: ReferenceStructure[];
+  protectedMotif: ProtectedMotif;
+}
+
+export interface ProcurementPackageFile {
+  name: string;
+  mediaType: string;
+  content: string;
+}
+
+export interface ProcurementPackage {
+  requestId: string;
+  experimentId: string;
+  candidateId: string;
+  sequence: string;
+  sequenceSha256: string;
+  sequenceLength: number;
+  mutations: string[];
+  specification: ProcurementSpecification;
+  supplierCatalogConfigured: boolean;
+  supplierStatus: string;
+  evidence: { artifactId?: string; sha256?: string; path?: string; note?: string } | null;
+  caveats: string[];
+  generatedAt: string;
+  files: ProcurementPackageFile[];
+}
+
 export interface ProtEvaApi {
   createExperiment(draft: {
     input: SequenceInput;
     target: TargetLandscape;
-    config: SearchConfig;
+    config: ExperimentSearchConfig;
     executionMode?: "demo" | "live";
   }): Promise<Experiment>;
   listExperiments(): Promise<Experiment[]>;
@@ -255,6 +354,8 @@ export interface ProtEvaApi {
   recoverReport?(id: string): Promise<Experiment>;
   resumeAfterScoring?(id: string): Promise<Experiment>;
   downloadArtifact?(experimentId: string, artifactId: string): Promise<Blob>;
+  getReferences?(): Promise<ReferenceCatalog>;
+  getReferenceCoordinates?(pdbId: string): Promise<string>;
   createProcurementRequest?(input: {
     experimentId: string;
     candidateId: string;
@@ -262,12 +363,25 @@ export interface ProtEvaApi {
   }): Promise<ProcurementRequest>;
   listProcurementRequests?(experimentId: string): Promise<ProcurementRequest[]>;
   getProcurementRequest?(experimentId: string, requestId: string): Promise<ProcurementRequest>;
-  searchProcurement?(experimentId: string, requestId: string): Promise<{
+  searchProcurement?(
+    experimentId: string,
+    requestId: string,
+  ): Promise<{
     request: ProcurementRequest;
     adapterStatuses: Array<Record<string, unknown>>;
     externalRoutes: Array<Record<string, string>>;
     demo: boolean;
   }>;
-  prepareProcurementCart?(experimentId: string, requestId: string, optionId: string): Promise<ProcurementRequest>;
-  approveProcurementCart?(experimentId: string, requestId: string, approvalHash: string, consent: boolean): Promise<ProcurementRequest>;
+  prepareProcurementCart?(
+    experimentId: string,
+    requestId: string,
+    optionId: string,
+  ): Promise<ProcurementRequest>;
+  approveProcurementCart?(
+    experimentId: string,
+    requestId: string,
+    approvalHash: string,
+    consent: boolean,
+  ): Promise<ProcurementRequest>;
+  prepareProcurementPackage?(experimentId: string, requestId: string): Promise<ProcurementPackage>;
 }

@@ -5,6 +5,7 @@ import {
   ClipboardCheck,
   GitBranch,
   Microscope,
+  Package,
   Radar,
   ScrollText,
   TriangleAlert,
@@ -22,7 +23,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { actorLabel, formatTime } from "@/lib/protein/format";
+import { AGENT_LABEL, actorLabel, formatTime } from "@/lib/protein/format";
 import { AGENTS } from "@/lib/protein/mock-data";
 import { cn } from "@/lib/utils";
 import type { Agent, AgentEvent, AgentEventKind, AgentId } from "@/lib/protein/types";
@@ -34,7 +35,46 @@ const AGENT_ICON: Record<AgentId, typeof Bot> = {
   "ensemble-analysis-worker": Microscope,
   "scientific-auditor": ClipboardCheck,
   "report-agent": ScrollText,
+  "procurement-agent": Package,
 };
+
+/** Build a truthful roster from the agents that actually appear in recorded events. */
+function agentsFromEvents(events: AgentEvent[]): Agent[] {
+  const order: AgentId[] = [];
+  const byId = new Map<AgentId, AgentEvent[]>();
+  for (const event of events) {
+    for (const actor of [event.from, event.to]) {
+      if (actor === "system" || actor === "user") continue;
+      const id = actor as AgentId;
+      if (!byId.has(id)) {
+        byId.set(id, []);
+        order.push(id);
+      }
+      byId.get(id)!.push(event);
+    }
+  }
+  return order.map((id) => {
+    const related = byId.get(id)!;
+    const last = related[related.length - 1]!;
+    const template = AGENTS.find((agent) => agent.id === id);
+    const status: Agent["status"] =
+      last.kind === "validation_warning"
+        ? "blocked"
+        : last.kind === "tool_call" || last.kind === "delegation"
+          ? "working"
+          : "done";
+    return {
+      id,
+      name: template?.name ?? AGENT_LABEL[id],
+      role: template?.role ?? "Recorded participant",
+      description: template?.description ?? "Participant recorded in this live run's event log.",
+      tools: template?.tools ?? [],
+      status,
+      currentTask: last.summary,
+      lastActivity: `${formatTime(last.timestamp)} · ${related.length} recorded event${related.length === 1 ? "" : "s"}`,
+    };
+  });
+}
 
 const STATUS_TONE: Record<Agent["status"], string> = {
   idle: "border-border bg-muted text-muted-foreground",
@@ -56,20 +96,40 @@ const KIND_META: Record<AgentEventKind, { label: string; icon: typeof Bot; tone:
 export function AgentGrid({
   events,
   onSelect,
+  executionMode = "demo",
 }: {
   events: AgentEvent[];
   onSelect: (agent: Agent) => void;
+  executionMode?: "demo" | "live";
 }) {
+  const agents = executionMode === "live" ? agentsFromEvents(events) : AGENTS;
+
+  if (executionMode === "live" && agents.length === 0) {
+    return (
+      <p className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+        No agent activity has been recorded for this live run yet. Only agents that actually
+        produced events are shown here.
+      </p>
+    );
+  }
+
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-      {AGENTS.map((agent) => {
+      {agents.map((agent) => {
         const Icon = AGENT_ICON[agent.id];
         const count = events.filter((e) => e.from === agent.id || e.to === agent.id).length;
         return (
           <Card
             key={agent.id}
             className="agent-instrument cursor-pointer border-border bg-card transition-colors hover:border-primary/50"
-            role="button" tabIndex={0} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(agent); } }}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(agent);
+              }
+            }}
             onClick={() => onSelect(agent)}
           >
             <CardContent className="p-4">
@@ -166,7 +226,7 @@ export function AgentTimeline({ events }: { events: AgentEvent[] }) {
                           key={key}
                           className="rounded border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
                         >
-                          {key}={String(value)}
+                          {key}={typeof value === "object" ? JSON.stringify(value) : String(value)}
                         </span>
                       ))}
                     </div>
@@ -228,8 +288,8 @@ export function AgentInspector({
             )}
           </div>
           <p className="text-[11px] text-muted-foreground">
-            ProtEva shows recorded decisions and tool evidence. Hidden model reasoning is never
-            displayed, and no Gemma call has been executed in demo mode.
+            ProtEva shows recorded decisions and tool evidence only. Hidden model reasoning is never
+            displayed.
           </p>
         </div>
       </SheetContent>

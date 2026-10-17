@@ -10,18 +10,22 @@ import {
 } from "./mock-data";
 import type {
   AgentEvent,
+  AgentId,
   Artifact,
   Candidate,
   CandidateQuery,
   Experiment,
+  ExperimentSearchConfig,
   ExperimentStatus,
+  ProcurementPackage,
   ProcurementRequest,
   ProcurementSpecification,
   ProtEvaApi,
-  SearchConfig,
+  ReferenceCatalog,
   SequenceInput,
   TargetLandscape,
 } from "./types";
+import { isLiveSearchConfig } from "./format";
 
 const DEMO_SEQUENCE_STAGES: ExperimentStatus[] = [
   "queued",
@@ -31,6 +35,17 @@ const DEMO_SEQUENCE_STAGES: ExperimentStatus[] = [
   "auditing",
   "completed",
 ];
+
+/** Backend role names map to the agent identities the UI renders. */
+const ROLE_TO_AGENT: Record<string, AgentId> = {
+  "Landscape Interpreter": "landscape-interpreter",
+  "Search Strategist": "search-strategist",
+  "Evolution Coordinator": "evolution-coordinator",
+  "Ensemble Analysis Worker": "ensemble-analysis-worker",
+  "Scientific Auditor": "scientific-auditor",
+  "Report Agent": "report-agent",
+  "Procurement Agent": "procurement-agent",
+};
 
 type Listener = () => void;
 
@@ -73,7 +88,7 @@ export class MockApiClient implements ProtEvaApi {
   async createExperiment(draft: {
     input: SequenceInput;
     target: TargetLandscape;
-    config: SearchConfig;
+    config: ExperimentSearchConfig;
     executionMode?: "demo" | "live";
   }): Promise<Experiment> {
     await delay(220);
@@ -268,7 +283,9 @@ export class MockApiClient implements ProtEvaApi {
       "",
       "## 2. Recorded settings",
       `- Population ${experiment.config.populationSize}, generations ${experiment.config.generations}, max substitutions ${experiment.config.maxSubstitutions}`,
-      `- Screening samples ${experiment.config.screeningSamples}, finalist samples ${experiment.config.finalistSamples}`,
+      isLiveSearchConfig(experiment.config)
+        ? `- Screening seed ${experiment.config.screeningSeed}, finalist rescore seeds ${experiment.config.finalistRescoreSeeds.join(", ")}`
+        : `- Screening samples ${experiment.config.screeningSamples}, finalist samples ${experiment.config.finalistSamples}`,
       `- Mutation strategy ${experiment.config.mutationStrategy}, seed ${experiment.config.randomSeed}`,
       "",
       "## 3. Actual measurements",
@@ -331,6 +348,7 @@ export class HttpApiClient implements ProtEvaApi {
       warnings: raw.warnings ?? [],
       executionMode: raw.executionMode,
       simulated: raw.executionMode === "demo",
+      effectiveConfig: raw.effectiveConfig ?? null,
     } as Experiment;
   }
 
@@ -351,15 +369,29 @@ export class HttpApiClient implements ProtEvaApi {
   private event(raw: any): AgentEvent {
     return {
       ...raw,
-      from: "evolution-coordinator",
+      from: ROLE_TO_AGENT[raw.payload?.role as string] ?? "evolution-coordinator",
       to: "system",
-      kind: raw.kind === "warning" || raw.kind === "error" ? "validation_warning" : raw.kind === "tool_request" ? "tool_call" : raw.kind === "decision" || raw.kind === "coordinator_decision" ? "decision" : raw.kind === "agent_task" ? "delegation" : "result",
+      kind:
+        raw.kind === "warning" || raw.kind === "error"
+          ? "validation_warning"
+          : raw.kind === "tool_request"
+            ? "tool_call"
+            : raw.kind === "decision" || raw.kind === "coordinator_decision"
+              ? "decision"
+              : raw.kind === "agent_task"
+                ? "delegation"
+                : "result",
       detail: raw.payload ? JSON.stringify(raw.payload) : undefined,
     } as AgentEvent;
   }
 
-  async createExperiment(draft: { input: SequenceInput; target: TargetLandscape; config: SearchConfig; executionMode?: "demo" | "live" }) {
-    const raw=await this.request<unknown>("/experiments", {
+  async createExperiment(draft: {
+    input: SequenceInput;
+    target: TargetLandscape;
+    config: ExperimentSearchConfig;
+    executionMode?: "demo" | "live";
+  }) {
+    const raw = await this.request<unknown>("/experiments", {
       method: "POST",
       body: JSON.stringify({ ...draft, executionMode: draft.executionMode ?? "demo" }),
     });
@@ -372,60 +404,159 @@ export class HttpApiClient implements ProtEvaApi {
     return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}`));
   }
   async getExperimentEvents(id: string) {
-    return (await this.request<any[]>(`/experiments/${encodeURIComponent(id)}/events`)).map((item) => this.event(item));
+    return (await this.request<any[]>(`/experiments/${encodeURIComponent(id)}/events`)).map(
+      (item) => this.event(item),
+    );
   }
   async getCandidates(query: CandidateQuery = {}) {
-    if (!query.experimentId) throw new ApiClientError({ message: "Live candidate retrieval requires an experimentId.", path: "/experiments/{id}/candidates", status: 400 });
-    const candidates=(await this.request<any[]>(`/experiments/${encodeURIComponent(query.experimentId)}/candidates`)).map((item) => this.candidate(item));
-    return candidates.filter((item) => (query.generation == null || item.generation === query.generation) && (query.maxMutations == null || item.mutations.length <= query.maxMutations) && (!query.search || item.id.includes(query.search) || item.mutations.join(",").includes(query.search)));
+    if (!query.experimentId)
+      throw new ApiClientError({
+        message: "Live candidate retrieval requires an experimentId.",
+        path: "/experiments/{id}/candidates",
+        status: 400,
+      });
+    const candidates = (
+      await this.request<any[]>(`/experiments/${encodeURIComponent(query.experimentId)}/candidates`)
+    ).map((item) => this.candidate(item));
+    return candidates.filter(
+      (item) =>
+        (query.generation == null || item.generation === query.generation) &&
+        (query.maxMutations == null || item.mutations.length <= query.maxMutations) &&
+        (!query.search ||
+          item.id.includes(query.search) ||
+          item.mutations.join(",").includes(query.search)),
+    );
   }
-  async getCandidate(id: string) {
-    throw new ApiClientError({ message: "Live candidate detail requires its experiment context.", path: `/candidates/${encodeURIComponent(id)}`, status: 400 });
+  async getCandidate(id: string): Promise<Candidate> {
+    throw new ApiClientError({
+      message: "Live candidate detail requires its experiment context.",
+      path: `/candidates/${encodeURIComponent(id)}`,
+      status: 400,
+    });
   }
   async getArtifacts(experimentId: string) {
-    const raw=await this.request<any[]>(`/experiments/${encodeURIComponent(experimentId)}/artifacts`);
-    return raw.map((item) => ({ id:item.id, experimentId, kind:item.kind ?? "report", name:item.path ?? item.id, sizeLabel:item.sha256 ? `SHA-256 ${String(item.sha256).slice(0,12)}…` : "—", createdAt:"", downloadable:Boolean(item.path), note:item.sha256 ? `Checksum ${item.sha256}` : undefined } as Artifact));
+    const raw = await this.request<any[]>(
+      `/experiments/${encodeURIComponent(experimentId)}/artifacts`,
+    );
+    return raw.map(
+      (item) =>
+        ({
+          id: item.id,
+          experimentId,
+          kind: item.kind ?? "report",
+          name: item.path ?? item.id,
+          sizeLabel: item.sha256 ? `SHA-256 ${String(item.sha256).slice(0, 12)}…` : "—",
+          createdAt: "",
+          downloadable: Boolean(item.path),
+          note: item.sha256 ? `Checksum ${item.sha256}` : undefined,
+        }) as Artifact,
+    );
   }
   async cancelExperiment(id: string) {
-    return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}/cancel`, {
-      method: "POST",
-    }));
+    return this.experiment(
+      await this.request<any>(`/experiments/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+      }),
+    );
   }
   async exportExperiment(id: string, format: "markdown" | "json") {
-    return JSON.stringify(await this.request(`/experiments/${encodeURIComponent(id)}/export`), null, 2);
+    return JSON.stringify(
+      await this.request(`/experiments/${encodeURIComponent(id)}/export`),
+      null,
+      2,
+    );
   }
-  async recoverReport(id: string) { return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}/reports/recover`, { method:"POST" })); }
-  async resumeAfterScoring(id: string) { return this.experiment(await this.request<any>(`/experiments/${encodeURIComponent(id)}/resume-after-scoring`, { method:"POST" })); }
-  async createProcurementRequest(input: { experimentId: string; candidateId: string; specification: ProcurementSpecification }) {
-    const raw=await this.request<any>(`/experiments/${encodeURIComponent(input.experimentId)}/procurement/requests`, { method:"POST", body: JSON.stringify({ experimentId: input.experimentId, candidateId: input.candidateId, specification: input.specification }) });
+  async recoverReport(id: string) {
+    return this.experiment(
+      await this.request<any>(`/experiments/${encodeURIComponent(id)}/reports/recover`, {
+        method: "POST",
+      }),
+    );
+  }
+  async resumeAfterScoring(id: string) {
+    return this.experiment(
+      await this.request<any>(`/experiments/${encodeURIComponent(id)}/resume-after-scoring`, {
+        method: "POST",
+      }),
+    );
+  }
+  async createProcurementRequest(input: {
+    experimentId: string;
+    candidateId: string;
+    specification: ProcurementSpecification;
+  }) {
+    const raw = await this.request<any>(
+      `/experiments/${encodeURIComponent(input.experimentId)}/procurement/requests`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          experimentId: input.experimentId,
+          candidateId: input.candidateId,
+          specification: input.specification,
+        }),
+      },
+    );
     return raw as ProcurementRequest;
   }
   async listProcurementRequests(experimentId: string) {
-    return await this.request<any[]>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests`);
+    return await this.request<any[]>(
+      `/experiments/${encodeURIComponent(experimentId)}/procurement/requests`,
+    );
   }
   async getProcurementRequest(experimentId: string, requestId: string) {
-    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}`);
+    return await this.request<any>(
+      `/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}`,
+    );
   }
   async searchProcurement(experimentId: string, requestId: string) {
-    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/search`, { method:"POST" });
+    return await this.request<any>(
+      `/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/search`,
+      { method: "POST" },
+    );
   }
   async prepareProcurementCart(experimentId: string, requestId: string, optionId: string) {
-    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/prepare-cart`, { method:"POST", body: JSON.stringify({ optionId }) });
+    return await this.request<any>(
+      `/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/prepare-cart`,
+      { method: "POST", body: JSON.stringify({ optionId }) },
+    );
   }
-  async approveProcurementCart(experimentId: string, requestId: string, approvalHash: string, consent: boolean) {
-    return await this.request<any>(`/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/approve`, { method:"POST", body: JSON.stringify({ approvalHash, consent }) });
+  async approveProcurementCart(
+    experimentId: string,
+    requestId: string,
+    approvalHash: string,
+    consent: boolean,
+  ) {
+    return await this.request<any>(
+      `/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/approve`,
+      { method: "POST", body: JSON.stringify({ approvalHash, consent }) },
+    );
   }
   async downloadArtifact(experimentId: string, artifactId: string) {
-    const path=`/experiments/${encodeURIComponent(experimentId)}/artifacts/${encodeURIComponent(artifactId)}/download`;
-    const response=await fetch(`${this.baseUrl}${path}`);
-    if (!response.ok) throw await ApiClientError.fromResponse(response,path);
+    const path = `/experiments/${encodeURIComponent(experimentId)}/artifacts/${encodeURIComponent(artifactId)}/download`;
+    const response = await fetch(`${this.baseUrl}${path}`);
+    if (!response.ok) throw await ApiClientError.fromResponse(response, path);
     return response.blob();
+  }
+  async getReferences() {
+    return (await this.request<ReferenceCatalog>("/references")) as ReferenceCatalog;
+  }
+  async getReferenceCoordinates(pdbId: string) {
+    const path = `/references/${encodeURIComponent(pdbId)}/coordinates`;
+    const response = await fetch(`${this.baseUrl}${path}`);
+    if (!response.ok) throw await ApiClientError.fromResponse(response, path);
+    return response.text();
+  }
+  async prepareProcurementPackage(experimentId: string, requestId: string) {
+    return (await this.request<ProcurementPackage>(
+      `/experiments/${encodeURIComponent(experimentId)}/procurement/requests/${encodeURIComponent(requestId)}/package`,
+      { method: "POST" },
+    )) as ProcurementPackage;
   }
 }
 
 export class ApiClientError extends Error {
   readonly status: number;
-  readonly code?: string;
+  readonly code: string | undefined;
   readonly path: string;
 
   constructor({
@@ -437,7 +568,7 @@ export class ApiClientError extends Error {
     message: string;
     path: string;
     status: number;
-    code?: string;
+    code?: string | undefined;
   }) {
     super(message);
     this.name = "ApiClientError";

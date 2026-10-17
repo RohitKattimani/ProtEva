@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Schema(BaseModel):
@@ -69,6 +69,8 @@ class TargetLandscape(Schema):
 
 
 class SearchConfig(Schema):
+    """Demo-mode search configuration (simulated sampling budget semantics)."""
+
     population_size: int = Field(alias="populationSize", gt=0)
     generations: int = Field(gt=0)
     max_substitutions: int = Field(alias="maxSubstitutions", ge=0)
@@ -81,11 +83,84 @@ class SearchConfig(Schema):
     acknowledge_experimental_proxy: bool = Field(default=False, alias="acknowledgeExperimentalProxy")
 
 
+class LiveSearchConfig(Schema):
+    """Validated live-execution configuration.
+
+    The live workflow scores candidates with batched ProteinMPNN runs, so the
+    obsolete BioEmu-style conformational sample counts are intentionally not
+    part of this schema: sending them is rejected instead of being clamped.
+    """
+
+    population_size: int = Field(alias="populationSize", ge=2, le=8)
+    generations: int = Field(ge=1, le=2)
+    max_substitutions: int = Field(alias="maxSubstitutions", ge=0)
+    screening_seed: int = Field(default=17, alias="screeningSeed")
+    finalist_rescore_seeds: list[int] = Field(default_factory=lambda: [23, 41], alias="finalistRescoreSeeds")
+    max_finalists: int = Field(default=3, alias="maxFinalists", ge=1)
+    candidate_evaluation_budget: int = Field(default=8, alias="candidateEvaluationBudget", ge=1, le=64)
+    mutation_strategy: str = Field(alias="mutationStrategy")
+    diversity_preference: int = Field(alias="diversityPreference", ge=0, le=100)
+    random_seed: int = Field(alias="randomSeed")
+    protected_positions: Optional[list[int]] = Field(default=None, alias="protectedPositions")
+    enable_experimental_proxy_selection: bool = Field(default=False, alias="enableExperimentalProxySelection")
+    acknowledge_experimental_proxy: bool = Field(default=False, alias="acknowledgeExperimentalProxy")
+
+    @model_validator(mode="after")
+    def _bounded_budgets(self) -> "LiveSearchConfig":
+        if self.candidate_evaluation_budget < self.population_size:
+            raise ValueError("candidateEvaluationBudget must be at least populationSize for a live run")
+        if self.max_finalists > self.candidate_evaluation_budget:
+            raise ValueError("maxFinalists cannot exceed candidateEvaluationBudget")
+        if not self.finalist_rescore_seeds:
+            raise ValueError("finalistRescoreSeeds must contain at least one seed")
+        if self.screening_seed in set(self.finalist_rescore_seeds):
+            raise ValueError("finalistRescoreSeeds must not repeat the screening seed")
+        return self
+
+
+class EffectiveSearchConfig(Schema):
+    """Exactly what the execution engine ran, derived from persisted records."""
+
+    population_size: int = Field(alias="populationSize")
+    generations: int
+    max_substitutions: int = Field(alias="maxSubstitutions")
+    screening_seed: Optional[int] = Field(default=None, alias="screeningSeed")
+    screening_seeds: list[int] = Field(default_factory=list, alias="screeningSeeds")
+    finalist_rescore_seeds: list[int] = Field(default_factory=list, alias="finalistRescoreSeeds")
+    max_finalists: int = Field(alias="maxFinalists")
+    candidates_evaluated: int = Field(alias="candidatesEvaluated")
+    candidate_evaluation_budget: int = Field(alias="candidateEvaluationBudget")
+    mutation_strategy: str = Field(alias="mutationStrategy")
+    random_seed: int = Field(alias="randomSeed")
+    protected_positions: list[int] = Field(default_factory=list, alias="protectedPositions")
+    protected_positions_source: Optional[str] = Field(default=None, alias="protectedPositionsSource")
+    protected_constraint_enforced: bool = Field(default=False, alias="protectedConstraintEnforced")
+    protected_constraint_violations: list[str] = Field(default_factory=list, alias="protectedConstraintViolations")
+    requested_metric: str = Field(alias="requestedMetric")
+    supported_metric: str = Field(alias="supportedMetric")
+    metric_supported: bool = Field(alias="metricSupported")
+    requested_population_size: int = Field(alias="requestedPopulationSize")
+    requested_generations: int = Field(alias="requestedGenerations")
+    source: str = Field(alias="source")
+
+
 class ExperimentCreate(Schema):
     input: SequenceInput
     target: TargetLandscape
-    config: SearchConfig
+    config: Union[LiveSearchConfig, SearchConfig]
     execution_mode: ExecutionMode = Field(default=ExecutionMode.demo, alias="executionMode")
+
+    @model_validator(mode="after")
+    def _match_config_to_mode(self) -> "ExperimentCreate":
+        if self.execution_mode is ExecutionMode.live and not isinstance(self.config, LiveSearchConfig):
+            raise ValueError(
+                "live experiments require the live configuration schema: populationSize 2-8, "
+                "generations 1-2, screeningSeed/finalistRescoreSeeds/maxFinalists instead of "
+                "screeningSamples/finalistSamples"
+            )
+        if self.execution_mode is ExecutionMode.demo and isinstance(self.config, LiveSearchConfig):
+            raise ValueError("demo experiments require the demo configuration schema with screeningSamples/finalistSamples")
+        return self
 
 
 class Experiment(Schema):
@@ -96,7 +171,8 @@ class Experiment(Schema):
     created_at: datetime = Field(alias="createdAt")
     input: SequenceInput
     target: TargetLandscape
-    config: SearchConfig
+    config: Union[LiveSearchConfig, SearchConfig]
+    effective_config: Optional[EffectiveSearchConfig] = Field(default=None, alias="effectiveConfig")
     current_generation: Optional[int] = Field(default=None, alias="currentGeneration")
     candidate_count: Optional[int] = Field(default=None, alias="candidateCount")
     requires_review: Optional[int] = Field(default=None, alias="requiresReview")

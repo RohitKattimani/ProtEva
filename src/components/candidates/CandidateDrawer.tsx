@@ -1,12 +1,19 @@
-import { Copy, Download, FlaskConical, Info, ShoppingCart } from "lucide-react";
+import { Copy, Download, FlaskConical, Info, Package, ShoppingCart } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 import { Pill } from "@/components/app/StatusBadge";
+import { ReferenceViewer } from "@/components/molecules/ReferenceViewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -17,7 +24,14 @@ import {
 } from "@/components/ui/sheet";
 import { api } from "@/lib/protein/api";
 import { candidateLabel, downloadTextFile, toFasta } from "@/lib/protein/format";
-import type { Candidate, ProcurementProductType, ProcurementRequest, ProcurementSpecification, SupplierOption } from "@/lib/protein/types";
+import type {
+  Candidate,
+  ProcurementPackage,
+  ProcurementProductType,
+  ProcurementRequest,
+  ProcurementSpecification,
+  SupplierOption,
+} from "@/lib/protein/types";
 
 function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -69,9 +83,6 @@ export function CandidateDrawer({
   candidate: Candidate | null;
   onOpenChange: (open: boolean) => void;
 }) {
-  if (!candidate) return null;
-  const metrics = candidate.metrics;
-  const isLiveMeasurement = candidate.targetMeanNll != null || candidate.offTargetMeanNll != null;
   const [procurementOpen, setProcurementOpen] = useState(false);
   const [productType, setProductType] = useState<ProcurementProductType>("best_available");
   const [quantity, setQuantity] = useState("1 mg");
@@ -82,7 +93,12 @@ export function CandidateDrawer({
   const [procurementRequest, setProcurementRequest] = useState<ProcurementRequest | null>(null);
   const [searchResult, setSearchResult] = useState<any>(null);
   const [selectedOption, setSelectedOption] = useState<SupplierOption | null>(null);
+  const [packageData, setPackageData] = useState<ProcurementPackage | null>(null);
   const [busy, setBusy] = useState(false);
+
+  if (!candidate) return null;
+  const metrics = candidate.metrics;
+  const isLiveMeasurement = candidate.targetMeanNll != null || candidate.offTargetMeanNll != null;
 
   return (
     <Sheet open={Boolean(candidate)} onOpenChange={onOpenChange}>
@@ -91,7 +107,8 @@ export function CandidateDrawer({
           <SheetTitle className="font-mono">{candidateLabel(candidate)}</SheetTitle>
           <SheetDescription>
             Generation {candidate.generation} · parent{" "}
-            <span className="font-mono">{candidate.parentId ?? "wild-type"}</span> · {isLiveMeasurement ? "recorded ProteinMPNN measurement" : "illustrative demo candidate"}
+            <span className="font-mono">{candidate.parentId ?? "wild-type"}</span> ·{" "}
+            {isLiveMeasurement ? "recorded ProteinMPNN measurement" : "illustrative demo candidate"}
           </SheetDescription>
         </SheetHeader>
 
@@ -125,7 +142,10 @@ export function CandidateDrawer({
               onClick={() => {
                 downloadTextFile(
                   `${candidate.id}.fasta`,
-                  toFasta(`${candidate.id} ${isLiveMeasurement ? "COMPUTATIONAL" : "DEMO_SIMULATED"} ${candidate.mutations.join(",")}`, candidate.sequence),
+                  toFasta(
+                    `${candidate.id} ${isLiveMeasurement ? "COMPUTATIONAL" : "DEMO_SIMULATED"} ${candidate.mutations.join(",")}`,
+                    candidate.sequence,
+                  ),
                 );
                 toast.success("FASTA downloaded");
               }}
@@ -142,27 +162,48 @@ export function CandidateDrawer({
           <Separator />
 
           <div>
-            <p className="mb-2 text-sm font-medium">Structural visualisation</p>
-            <div className="structure-unavailable grid h-64 place-items-center border border-dashed border-border bg-surface text-center">
-              <div className="px-6">
-                <FlaskConical className="mx-auto size-6 text-muted-foreground" />
-                <p className="mt-2 text-sm text-muted-foreground">No structure available</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  A 3D model appears here once the BioEmu sampling worker is connected. ProtEva never
-                  renders an invented structure as a real protein model.
+            <p className="mb-2 text-sm font-medium">Reference structure</p>
+            <div className="structure-unavailable mb-2 grid place-items-center border border-dashed border-border bg-surface p-4 text-center">
+              <div className="px-2">
+                <FlaskConical className="mx-auto size-5 text-muted-foreground" />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  No predicted structure exists for this candidate. ProtEva never renders an
+                  invented protein model as a real candidate structure — a candidate model appears
+                  here only once genuine sampling artifacts are produced.
                 </p>
               </div>
             </div>
+            <ReferenceViewer />
           </div>
 
           <div>
-            <p className="mb-2 text-sm font-medium">{isLiveMeasurement ? "ProteinMPNN compatibility measurements" : "Metrics (demonstration values)"}</p>
+            <p className="mb-2 text-sm font-medium">
+              {isLiveMeasurement
+                ? "ProteinMPNN compatibility measurements"
+                : "Metrics (demonstration values)"}
+            </p>
             {isLiveMeasurement ? (
               <div className="grid grid-cols-2 gap-2">
-                <Metric label="Target mean NLL" value={candidate.targetMeanNll?.toFixed(4) ?? "—"} hint="Lower is better under the same model configuration." />
-                <Metric label="Off-target mean NLL" value={candidate.offTargetMeanNll?.toFixed(4) ?? "—"} hint="Lower is better under the same model configuration." />
-                <Metric label="Target preference" value={candidate.targetPreference?.toFixed(4) ?? "—"} hint="off-target mean NLL − target mean NLL; higher favors target compatibility." />
-                <Metric label="Seed measurements" value={String(candidate.seedMetrics?.length ?? 0)} hint="Fixed-seed robustness audit records." />
+                <Metric
+                  label="Target mean NLL"
+                  value={candidate.targetMeanNll?.toFixed(4) ?? "—"}
+                  hint="Lower is better under the same model configuration."
+                />
+                <Metric
+                  label="Off-target mean NLL"
+                  value={candidate.offTargetMeanNll?.toFixed(4) ?? "—"}
+                  hint="Lower is better under the same model configuration."
+                />
+                <Metric
+                  label="Target preference"
+                  value={candidate.targetPreference?.toFixed(4) ?? "—"}
+                  hint="off-target mean NLL − target mean NLL; higher favors target compatibility."
+                />
+                <Metric
+                  label="Seed measurements"
+                  value={String(candidate.seedMetrics?.length ?? 0)}
+                  hint="Fixed-seed robustness audit records."
+                />
               </div>
             ) : metrics ? (
               <div className="grid grid-cols-2 gap-2">
@@ -171,10 +212,20 @@ export function CandidateDrawer({
                   value={metrics.targetOccupancy.toFixed(3)}
                   hint={`± ${metrics.uncertainty.toFixed(3)}`}
                 />
-                <Metric label="Off-target occupancy" value={metrics.offTargetOccupancy.toFixed(3)} />
+                <Metric
+                  label="Off-target occupancy"
+                  value={metrics.offTargetOccupancy.toFixed(3)}
+                />
                 <Metric label="RMSD" value={`${metrics.rmsdAngstrom.toFixed(2)} Å`} />
-                <Metric label="Radius of gyration" value={`${metrics.radiusOfGyration.toFixed(2)} Å`} />
-                <Metric label="Samples" value={String(metrics.sampleCount)} hint="Simulated budget" />
+                <Metric
+                  label="Radius of gyration"
+                  value={`${metrics.radiusOfGyration.toFixed(2)} Å`}
+                />
+                <Metric
+                  label="Samples"
+                  value={String(metrics.sampleCount)}
+                  hint="Simulated budget"
+                />
                 <Metric
                   label="Objective score"
                   value={candidate.objectiveScore?.toFixed(3) ?? "—"}
@@ -212,15 +263,25 @@ export function CandidateDrawer({
             {procurementOpen && (
               <div className="space-y-3 rounded-md border border-border bg-surface p-3">
                 <p className="text-xs text-muted-foreground">
-                  Candidate {candidate.id} from experiment {candidate.experimentId}. Computational candidates are not experimentally validated.
+                  Candidate {candidate.id} from experiment {candidate.experimentId}. Computational
+                  candidates are not experimentally validated.
                 </p>
                 <div className="grid gap-2">
                   <Label className="text-xs">Product or service</Label>
-                  <Select value={productType} onValueChange={(v) => setProductType(v as ProcurementProductType)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                  <Select
+                    value={productType}
+                    onValueChange={(v) => setProductType(v as ProcurementProductType)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="catalog_protein">Existing catalog protein reagent</SelectItem>
-                      <SelectItem value="custom_protein">Custom expressed and purified protein</SelectItem>
+                      <SelectItem value="catalog_protein">
+                        Existing catalog protein reagent
+                      </SelectItem>
+                      <SelectItem value="custom_protein">
+                        Custom expressed and purified protein
+                      </SelectItem>
                       <SelectItem value="synthetic_peptide">Synthetic peptide</SelectItem>
                       <SelectItem value="gene_synthesis">Gene or DNA synthesis service</SelectItem>
                       <SelectItem value="best_available">Find the best available option</SelectItem>
@@ -240,75 +301,150 @@ export function CandidateDrawer({
                 {(productType === "custom_protein" || productType === "best_available") && (
                   <div>
                     <Label className="text-xs">Expression system</Label>
-                    <Input value={expressionSystem} onChange={(e) => setExpressionSystem(e.target.value)} placeholder="E. coli, HEK293, ..." />
+                    <Input
+                      value={expressionSystem}
+                      onChange={(e) => setExpressionSystem(e.target.value)}
+                      placeholder="E. coli, HEK293, ..."
+                    />
                   </div>
                 )}
                 <div>
                   <Label className="text-xs">Destination region</Label>
-                  <Input value={destinationRegion} onChange={(e) => setDestinationRegion(e.target.value)} placeholder="US, EU, ..." />
+                  <Input
+                    value={destinationRegion}
+                    onChange={(e) => setDestinationRegion(e.target.value)}
+                    placeholder="US, EU, ..."
+                  />
                 </div>
-                <Button size="sm" disabled={busy} onClick={async () => {
-                  setBusy(true);
-                  try {
-                    const spec: ProcurementSpecification = {
-                      productType,
-                      quantity,
-                      purity: purity || undefined,
-                      expressionSystem: expressionSystem || undefined,
-                      destinationRegion: destinationRegion || undefined,
-                      consentToShareSequence: consent,
-                    };
-                    const created = await api.createProcurementRequest?.({
-                      experimentId: candidate.experimentId,
-                      candidateId: candidate.id,
-                      specification: spec,
-                    });
-                    if (!created) throw new Error("Procurement API unavailable");
-                    setProcurementRequest(created);
-                    const searched = await api.searchProcurement?.(candidate.experimentId, created.id);
-                    if (!searched) throw new Error("Supplier search did not return a result");
-                    setProcurementRequest(searched.request);
-                    setSearchResult(searched);
-                    toast.success("Supplier search completed");
-                  } catch (err) {
-                    toast.error("Procurement search failed", { description: (err as Error).message });
-                  } finally {
-                    setBusy(false);
-                  }
-                }}>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const spec: ProcurementSpecification = {
+                        productType,
+                        quantity,
+                        consentToShareSequence: consent,
+                        ...(purity ? { purity } : {}),
+                        ...(expressionSystem ? { expressionSystem } : {}),
+                        ...(destinationRegion ? { destinationRegion } : {}),
+                      };
+                      const created = await api.createProcurementRequest?.({
+                        experimentId: candidate.experimentId,
+                        candidateId: candidate.id,
+                        specification: spec,
+                      });
+                      if (!created) throw new Error("Procurement API unavailable");
+                      setProcurementRequest(created);
+                      const searched = await api.searchProcurement?.(
+                        candidate.experimentId,
+                        created.id,
+                      );
+                      if (!searched) throw new Error("Supplier search did not return a result");
+                      setProcurementRequest(searched.request);
+                      setSearchResult(searched);
+                      toast.success("Supplier search completed");
+                    } catch (err) {
+                      toast.error("Procurement search failed", {
+                        description: (err as Error).message,
+                      });
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
                   {busy ? "Searching..." : "Search suppliers"}
                 </Button>
 
                 {searchResult && (
                   <div className="space-y-2">
                     <div className="rounded border border-border bg-background p-2 font-mono text-[11px] text-muted-foreground">
-                      Request {procurementRequest?.id} · candidate {candidate.id} · sequence SHA-256 {procurementRequest?.sequenceSha256.slice(0, 16)}…
+                      Request {procurementRequest?.id} · candidate {candidate.id} · sequence SHA-256{" "}
+                      {procurementRequest?.sequenceSha256.slice(0, 16)}…
                     </div>
                     <p className="text-xs font-medium">Verified supplier results</p>
                     {(procurementRequest?.options ?? []).map((option: SupplierOption) => (
-                      <div key={option.sku ?? `${option.supplier}-${option.productName}`} className="rounded border border-border p-2 text-xs">
+                      <div
+                        key={option.sku ?? `${option.supplier}-${option.productName}`}
+                        className="rounded border border-border p-2 text-xs"
+                      >
                         <div className="flex items-center justify-between">
-                          <span className="font-medium">{option.supplier} — {option.productName}</span>
-                          <Pill tone={option.matchType === "exact_sequence" ? "success" : option.matchType === "similar_homolog" ? "warning" : "muted"}>{option.matchType}</Pill>
+                          <span className="font-medium">
+                            {option.supplier} — {option.productName}
+                          </span>
+                          <Pill
+                            tone={
+                              option.matchType === "exact_sequence"
+                                ? "success"
+                                : option.matchType === "similar_homolog"
+                                  ? "warning"
+                                  : "muted"
+                            }
+                          >
+                            {option.matchType}
+                          </Pill>
                         </div>
-                        <p className="text-muted-foreground">{option.category} · {option.availability ?? "availability unknown"} · {option.price != null ? `${option.price} ${option.currency}` : "quote required"}</p>
-                        <p className="text-muted-foreground">Source: {option.dataSource} · retrieved {new Date(option.retrievedAt).toLocaleString()}</p>
-                        {option.matchEvidence.map((evidence) => <p key={evidence} className="text-muted-foreground">{evidence}</p>)}
-                        {option.officialUrl && <a className="text-primary underline" href={option.officialUrl} target="_blank" rel="noreferrer">Official link</a>}
-                        {option.simulated && <p className="text-warning">Simulated demo result — not a live supplier product.</p>}
-                        <Button size="sm" variant="outline" className="mt-1" onClick={() => setSelectedOption(option)}>Select</Button>
+                        <p className="text-muted-foreground">
+                          {option.category} · {option.availability ?? "availability unknown"} ·{" "}
+                          {option.price != null
+                            ? `${option.price} ${option.currency}`
+                            : "quote required"}
+                        </p>
+                        <p className="text-muted-foreground">
+                          Source: {option.dataSource} · retrieved{" "}
+                          {new Date(option.retrievedAt).toLocaleString()}
+                        </p>
+                        {option.matchEvidence.map((evidence) => (
+                          <p key={evidence} className="text-muted-foreground">
+                            {evidence}
+                          </p>
+                        ))}
+                        {option.officialUrl && (
+                          <a
+                            className="text-primary underline"
+                            href={option.officialUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Official link
+                          </a>
+                        )}
+                        {option.simulated && (
+                          <p className="text-warning">
+                            Simulated demo result — not a live supplier product.
+                          </p>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="mt-1"
+                          onClick={() => setSelectedOption(option)}
+                        >
+                          Select
+                        </Button>
                       </div>
                     ))}
                     {!procurementRequest?.options.length && (
                       <p className="rounded border border-warning/30 bg-warning/5 p-2 text-xs text-muted-foreground">
-                        No verified supplier result was returned for this unique request. No configured supplier catalog can claim a match; use an official supplier route to request a custom quote.
+                        No verified supplier result was returned for this unique request. No
+                        configured supplier catalog can claim a match; use an official supplier
+                        route to request a custom quote.
                       </p>
                     )}
                     {searchResult.externalRoutes?.length > 0 && (
                       <div className="space-y-1">
                         <p className="text-xs font-medium">External supplier routes</p>
                         {searchResult.externalRoutes.map((route: any, index: number) => (
-                          <a key={index} className="block text-xs text-primary underline" href={route.url} target="_blank" rel="noreferrer">{route.supplier}: {route.note}</a>
+                          <a
+                            key={index}
+                            className="block text-xs text-primary underline"
+                            href={route.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {route.supplier}: {route.note}
+                          </a>
                         ))}
                       </div>
                     )}
@@ -318,34 +454,129 @@ export function CandidateDrawer({
                 {selectedOption && procurementRequest && (
                   <div className="space-y-2 rounded border border-border p-2">
                     <p className="text-xs font-medium">Review before action</p>
-                    <p className="text-xs text-muted-foreground">Supplier: {selectedOption.supplier}</p>
-                    <p className="text-xs text-muted-foreground">Product: {selectedOption.productName} ({selectedOption.sku ?? "no SKU"})</p>
+                    <p className="text-xs text-muted-foreground">
+                      Supplier: {selectedOption.supplier}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Product: {selectedOption.productName} ({selectedOption.sku ?? "no SKU"})
+                    </p>
                     <p className="text-xs text-muted-foreground">Quantity: {quantity}</p>
-                    <p className="text-xs text-muted-foreground">Price: {selectedOption.price != null ? `${selectedOption.price} ${selectedOption.currency}` : "quote required"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Price:{" "}
+                      {selectedOption.price != null
+                        ? `${selectedOption.price} ${selectedOption.currency}`
+                        : "quote required"}
+                    </p>
                     <label className="flex items-center gap-2 text-xs">
-                      <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-                      I consent to sending the candidate sequence and associated information to this supplier.
+                      <input
+                        type="checkbox"
+                        checked={consent}
+                        onChange={(e) => setConsent(e.target.checked)}
+                      />
+                      I consent to sending the candidate sequence and associated information to this
+                      supplier.
                     </label>
-                    <Button size="sm" disabled={!consent || busy} onClick={async () => {
-                      setBusy(true);
-                      try {
-                        const optionId = selectedOption.sku || selectedOption.productName;
-                        const prepared = await api.prepareProcurementCart?.(candidate.experimentId, procurementRequest.id, optionId);
-                        if (!prepared?.approvalHash) throw new Error("Preparation failed");
-                        setProcurementRequest(prepared);
-                        const approved = await api.approveProcurementCart?.(candidate.experimentId, procurementRequest.id, prepared.approvalHash, true);
-                        setProcurementRequest(approved ?? prepared);
-                        toast.success("Procurement request prepared and submitted for review");
-                      } catch (err) {
-                        toast.error("Approval failed", { description: (err as Error).message });
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}>
+                    <Button
+                      size="sm"
+                      disabled={!consent || busy}
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          const optionId = selectedOption.sku || selectedOption.productName;
+                          const prepared = await api.prepareProcurementCart?.(
+                            candidate.experimentId,
+                            procurementRequest.id,
+                            optionId,
+                          );
+                          if (!prepared?.approvalHash) throw new Error("Preparation failed");
+                          setProcurementRequest(prepared);
+                          const approved = await api.approveProcurementCart?.(
+                            candidate.experimentId,
+                            procurementRequest.id,
+                            prepared.approvalHash,
+                            true,
+                          );
+                          setProcurementRequest(approved ?? prepared);
+                          toast.success("Procurement request prepared and submitted for review");
+                        } catch (err) {
+                          toast.error("Approval failed", { description: (err as Error).message });
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
                       Prepare and approve
                     </Button>
                     {procurementRequest?.providerResponse && (
-                      <pre className="max-h-32 overflow-auto rounded bg-background p-2 text-[10px]">{JSON.stringify(procurementRequest.providerResponse, null, 2)}</pre>
+                      <pre className="max-h-32 overflow-auto rounded bg-background p-2 text-[10px]">
+                        {JSON.stringify(procurementRequest.providerResponse, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                )}
+
+                {procurementRequest && (
+                  <div className="space-y-2 rounded border border-border p-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-medium">Procurement package</p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={async () => {
+                          setBusy(true);
+                          try {
+                            const prepared = await api.prepareProcurementPackage?.(
+                              candidate.experimentId,
+                              procurementRequest.id,
+                            );
+                            if (!prepared) throw new Error("Package endpoint unavailable");
+                            setPackageData(prepared);
+                            toast.success("Procurement package prepared");
+                          } catch (err) {
+                            toast.error("Could not prepare the package", {
+                              description: (err as Error).message,
+                            });
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        <Package className="size-4" /> Prepare package
+                      </Button>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Generates a FASTA record, the sequence SHA-256, the mutation list and a
+                      quote-request document for a manual supplier quotation. It never invents
+                      supplier products, prices, purity or availability.
+                    </p>
+                    {packageData && (
+                      <div className="space-y-2">
+                        <p className="text-[11px] text-muted-foreground">
+                          {packageData.supplierStatus}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {packageData.files.map((file) => (
+                            <Button
+                              key={file.name}
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                downloadTextFile(file.name, file.content, file.mediaType)
+                              }
+                            >
+                              <Download className="size-3.5" /> {file.name}
+                            </Button>
+                          ))}
+                        </div>
+                        <ul className="space-y-1">
+                          {packageData.caveats.map((caveat) => (
+                            <li key={caveat} className="text-[11px] text-muted-foreground">
+                              - {caveat}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
                   </div>
                 )}
@@ -357,8 +588,13 @@ export function CandidateDrawer({
             <p className="mb-2 text-sm font-medium">Artifacts</p>
             <ul className="space-y-1 text-xs text-muted-foreground">
               <li className="font-mono">{candidate.id}.fasta — available</li>
-              <li className="font-mono">{candidate.id}_ensemble.xtc — requires sampling worker</li>
-              <li className="font-mono">{candidate.id}_metrics.csv — demonstration values</li>
+              <li className="font-mono">
+                {candidate.id}_metrics.csv —{" "}
+                {isLiveMeasurement ? "recorded ProteinMPNN measurements" : "demonstration values"}
+              </li>
+              <li className="font-mono">
+                {candidate.id}_structure.pdb — requires a genuine sampling artifact
+              </li>
             </ul>
           </div>
         </div>
