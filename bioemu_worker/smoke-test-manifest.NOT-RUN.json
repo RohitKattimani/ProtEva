@@ -1,0 +1,16 @@
+{
+  "status": "NOT_RUN",
+  "requested": {
+    "sequence": "GYDPETGTWG",
+    "num_samples": 10,
+    "model_name": "bioemu-v1.1"
+  },
+  "execution_environment": null,
+  "blocker": "This workspace is Windows, while upstream BioEmu is Linux-only. The available GeForce GPU reports a CUDA 11.7 driver with 4 GB total memory, whereas the current BioEmu CUDA extra targets CUDA 12 components. No upstream BioEmu package, checkpoint, or sampling command was installed or run here.",
+  "retained_samples": null,
+  "artifacts": [],
+  "artifact_validation": {
+    "valid": false,
+    "error": "No real BioEmu sampling job was executed."
+  }
+}

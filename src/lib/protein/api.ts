@@ -1,0 +1,425 @@
+// API abstraction. MockApiClient powers demo mode; HttpApiClient targets a future
+// FastAPI backend via VITE_API_BASE_URL. Failed real requests are never replaced
+// with mock data — they surface as errors.
+import {
+  buildAgentEvents,
+  buildArtifacts,
+  buildCandidates,
+  buildGenerationStats,
+  buildSeedExperiments,
+} from "./mock-data";
+import type {
+  AgentEvent,
+  Artifact,
+  Candidate,
+  CandidateQuery,
+  Experiment,
+  ExperimentStatus,
+  ProtEvaApi,
+  SearchConfig,
+  SequenceInput,
+  TargetLandscape,
+} from "./types";
+
+const DEMO_SEQUENCE_STAGES: ExperimentStatus[] = [
+  "queued",
+  "validating",
+  "sampling",
+  "evaluating",
+  "auditing",
+  "completed",
+];
+
+type Listener = () => void;
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export class MockApiClient implements ProtEvaApi {
+  private experiments: Experiment[] = buildSeedExperiments();
+  private candidates = new Map<string, Candidate[]>();
+  private events = new Map<string, AgentEvent[]>();
+  private listeners = new Set<Listener>();
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  constructor() {
+    for (const experiment of this.experiments) {
+      this.candidates.set(
+        experiment.id,
+        buildCandidates(
+          experiment.id,
+          experiment.sequence,
+          experiment.config.randomSeed,
+          experiment.currentGeneration,
+          experiment.config.populationSize,
+        ),
+      );
+      this.events.set(experiment.id, buildAgentEvents(experiment.id, experiment.config.randomSeed));
+    }
+  }
+
+  subscribe(listener: Listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit() {
+    for (const listener of this.listeners) listener();
+  }
+
+  async createExperiment(draft: {
+    input: SequenceInput;
+    target: TargetLandscape;
+    config: SearchConfig;
+  }): Promise<Experiment> {
+    await delay(220);
+    const id = `EXP-${1046 + this.experiments.length - 4}`;
+    const experiment: Experiment = {
+      id,
+      name: draft.input.experimentName || "Untitled experiment",
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      sequence: draft.input.sequence,
+      input: draft.input,
+      target: draft.target,
+      config: draft.config,
+      currentGeneration: 0,
+      candidateCount: 0,
+      requiresReview: 0,
+      generationStats: [],
+      warnings: ["Simulated run — no BioEmu sampling or Gemma execution takes place."],
+      simulated: true,
+    };
+    this.experiments = [experiment, ...this.experiments];
+    this.candidates.set(id, []);
+    this.events.set(id, []);
+    this.emit();
+    this.runDemoStateMachine(id);
+    return experiment;
+  }
+
+  private runDemoStateMachine(id: string) {
+    let stage = 0;
+    const tick = () => {
+      const experiment = this.experiments.find((e) => e.id === id);
+      if (!experiment || experiment.status === "cancelled" || experiment.status === "failed")
+        return;
+      stage += 1;
+      const status =
+        DEMO_SEQUENCE_STAGES[Math.min(stage, DEMO_SEQUENCE_STAGES.length - 1)] ?? "completed";
+      const generations =
+        status === "completed"
+          ? experiment.config.generations
+          : Math.min(experiment.config.generations, stage * 3);
+
+      const stats = buildGenerationStats(experiment.config.randomSeed, Math.max(1, generations));
+      const candidates = buildCandidates(
+        id,
+        experiment.sequence,
+        experiment.config.randomSeed,
+        Math.max(1, generations),
+        experiment.config.populationSize,
+      );
+      const allEvents = buildAgentEvents(id, experiment.config.randomSeed);
+      this.candidates.set(id, candidates);
+      this.events.set(
+        id,
+        allEvents.slice(0, Math.min(allEvents.length, stage * 2)).map((event) => ({
+          ...event,
+          timestamp: new Date().toISOString(),
+        })),
+      );
+      this.experiments = this.experiments.map((e) =>
+        e.id === id
+          ? {
+              ...e,
+              status,
+              currentGeneration: generations,
+              candidateCount: candidates.length,
+              requiresReview: candidates.filter((c) => c.auditStatus === "flagged").length,
+              generationStats: stats,
+            }
+          : e,
+      );
+      this.emit();
+      if (status !== "completed") {
+        this.timers.set(id, setTimeout(tick, 2600));
+      }
+    };
+    this.timers.set(id, setTimeout(tick, 1400));
+  }
+
+  async listExperiments(): Promise<Experiment[]> {
+    await delay(120);
+    return [...this.experiments];
+  }
+
+  async getExperiment(id: string): Promise<Experiment> {
+    await delay(100);
+    const experiment = this.experiments.find((e) => e.id === id);
+    if (!experiment) throw new Error(`Experiment ${id} was not found.`);
+    return experiment;
+  }
+
+  async getExperimentEvents(id: string): Promise<AgentEvent[]> {
+    await delay(80);
+    return this.events.get(id) ?? [];
+  }
+
+  async getCandidates(query: CandidateQuery = {}): Promise<Candidate[]> {
+    await delay(100);
+    let all: Candidate[] = query.experimentId
+      ? (this.candidates.get(query.experimentId) ?? [])
+      : [...this.candidates.values()].flat();
+
+    if (query.generation != null) all = all.filter((c) => c.generation === query.generation);
+    if (query.maxMutations != null)
+      all = all.filter((c) => c.mutations.length <= query.maxMutations!);
+    if (query.evaluationStatus)
+      all = all.filter((c) => c.evaluationStatus === query.evaluationStatus);
+    if (query.search) {
+      const needle = query.search.toLowerCase();
+      all = all.filter(
+        (c) =>
+          c.id.toLowerCase().includes(needle) ||
+          c.mutations.join(",").toLowerCase().includes(needle),
+      );
+    }
+    return all;
+  }
+
+  async getCandidate(id: string): Promise<Candidate> {
+    await delay(60);
+    const candidate = [...this.candidates.values()].flat().find((c) => c.id === id);
+    if (!candidate) throw new Error(`Candidate ${id} was not found.`);
+    return candidate;
+  }
+
+  async getArtifacts(experimentId: string): Promise<Artifact[]> {
+    await delay(80);
+    return buildArtifacts(experimentId);
+  }
+
+  async cancelExperiment(id: string): Promise<Experiment> {
+    await delay(120);
+    const timer = this.timers.get(id);
+    if (timer) clearTimeout(timer);
+    this.experiments = this.experiments.map((e) =>
+      e.id === id ? { ...e, status: "cancelled" as const } : e,
+    );
+    this.emit();
+    return this.getExperiment(id);
+  }
+
+  async exportExperiment(id: string, format: "markdown" | "json"): Promise<string> {
+    const experiment = await this.getExperiment(id);
+    const candidates = await this.getCandidates({ experimentId: id });
+    const events = await this.getExperimentEvents(id);
+    const best = [...candidates]
+      .filter((c) => c.objectiveScore != null)
+      .sort((a, b) => (b.objectiveScore ?? 0) - (a.objectiveScore ?? 0))[0];
+
+    if (format === "json") {
+      return JSON.stringify(
+        {
+          disclaimer:
+            "DEMO MODE — simulated data. No BioEmu sampling, Gemma execution or scientific validation occurred.",
+          userInputs: experiment.input,
+          recordedSettings: { target: experiment.target, config: experiment.config },
+          actualMeasurements: null,
+          demonstrationValues: {
+            generationStats: experiment.generationStats,
+            bestCandidate: best ?? null,
+            candidateCount: candidates.length,
+          },
+          agentInterpretations: events.map((e) => ({
+            at: e.timestamp,
+            from: e.from,
+            to: e.to,
+            kind: e.kind,
+            summary: e.summary,
+          })),
+          limitations: [
+            "Structural metrics are illustrative placeholders, not measurements.",
+            "Computational predictions do not establish biological function.",
+            "Rankings within the reported uncertainty are not separable.",
+          ],
+        },
+        null,
+        2,
+      );
+    }
+
+    return [
+      `# ProtEva report — ${experiment.name}`,
+      "",
+      "> **DEMO MODE · SIMULATED DATA.** No BioEmu sampling, Gemma execution or scientific validation occurred.",
+      "",
+      "## 1. User inputs",
+      `- Experiment: ${experiment.name} (${experiment.id})`,
+      `- Sequence length: ${experiment.sequence.length} residues`,
+      `- Objective: ${experiment.target.objectiveText}`,
+      `- Target state: ${experiment.target.targetStateDescription}`,
+      "",
+      "## 2. Recorded settings",
+      `- Population ${experiment.config.populationSize}, generations ${experiment.config.generations}, max substitutions ${experiment.config.maxSubstitutions}`,
+      `- Screening samples ${experiment.config.screeningSamples}, finalist samples ${experiment.config.finalistSamples}`,
+      `- Mutation strategy ${experiment.config.mutationStrategy}, seed ${experiment.config.randomSeed}`,
+      "",
+      "## 3. Actual measurements",
+      "- None. The structural sampling worker is not connected.",
+      "",
+      "## 4. Demonstration-only values",
+      `- Candidates generated: ${candidates.length}`,
+      best
+        ? `- Best illustrative candidate: ${best.id} (score ${best.objectiveScore}, mutations ${best.mutations.join(", ") || "none"})`
+        : "- No scored candidates yet.",
+      "",
+      "## 5. Agent interpretations",
+      ...events.map((e) => `- ${e.from} → ${e.to}: ${e.summary}`),
+      "",
+      "## 6. Scientific limitations",
+      "- Computational predictions do not establish biological function.",
+      "- Illustrative metrics must not be cited as experimental results.",
+      "- Rankings inside the reported uncertainty are not separable.",
+      "",
+    ].join("\n");
+  }
+}
+
+export class HttpApiClient implements ProtEvaApi {
+  private readonly baseUrl: string;
+
+  constructor(baseUrl: string) {
+    this.baseUrl = normalizeApiBaseUrl(baseUrl);
+  }
+
+  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const headers = new Headers(init?.headers);
+    headers.set("content-type", "application/json");
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
+      headers,
+    });
+    if (!response.ok) {
+      throw await ApiClientError.fromResponse(response, path);
+    }
+    try {
+      return (await response.json()) as T;
+    } catch {
+      throw new ApiClientError({
+        message: `Backend returned malformed JSON for ${path}`,
+        path,
+        status: response.status,
+      });
+    }
+  }
+
+  createExperiment(draft: { input: SequenceInput; target: TargetLandscape; config: SearchConfig }) {
+    return this.request<Experiment>("/experiments", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    });
+  }
+  listExperiments() {
+    return this.request<Experiment[]>("/experiments");
+  }
+  getExperiment(id: string) {
+    return this.request<Experiment>(`/experiments/${encodeURIComponent(id)}`);
+  }
+  getExperimentEvents(id: string) {
+    return this.request<AgentEvent[]>(`/experiments/${encodeURIComponent(id)}/events`);
+  }
+  getCandidates(query: CandidateQuery = {}) {
+    const params = new URLSearchParams(
+      Object.entries(query)
+        .filter(([, value]) => value !== undefined && value !== "")
+        .map(([key, value]) => [key, String(value)]),
+    );
+    const queryString = params.toString();
+    return this.request<Candidate[]>(`/candidates${queryString ? `?${queryString}` : ""}`);
+  }
+  getCandidate(id: string) {
+    return this.request<Candidate>(`/candidates/${encodeURIComponent(id)}`);
+  }
+  getArtifacts(experimentId: string) {
+    return this.request<Artifact[]>(`/experiments/${encodeURIComponent(experimentId)}/artifacts`);
+  }
+  cancelExperiment(id: string) {
+    return this.request<Experiment>(`/experiments/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+    });
+  }
+  async exportExperiment(id: string, format: "markdown" | "json") {
+    const path = `/experiments/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`;
+    const response = await fetch(`${this.baseUrl}${path}`);
+    if (!response.ok) throw await ApiClientError.fromResponse(response, path);
+    return response.text();
+  }
+}
+
+export class ApiClientError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly path: string;
+
+  constructor({
+    message,
+    path,
+    status,
+    code,
+  }: {
+    message: string;
+    path: string;
+    status: number;
+    code?: string;
+  }) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = status;
+    this.code = code;
+    this.path = path;
+  }
+
+  static async fromResponse(response: Response, path: string): Promise<ApiClientError> {
+    let code: string | undefined;
+    let message = `Backend request failed (${response.status}) for ${path}`;
+    try {
+      const body = (await response.json()) as { error?: { code?: unknown; message?: unknown } };
+      if (typeof body.error?.code === "string") code = body.error.code;
+      if (typeof body.error?.message === "string") message = body.error.message;
+    } catch {
+      // Preserve status and endpoint details when an error response is not JSON.
+    }
+    return new ApiClientError({ message, path, status: response.status, code });
+  }
+}
+
+export function normalizeApiBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) throw new Error("VITE_API_BASE_URL must be a non-empty HTTP(S) URL.");
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("VITE_API_BASE_URL must be an absolute HTTP(S) URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("VITE_API_BASE_URL must use HTTP or HTTPS.");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("VITE_API_BASE_URL must not include a query string or fragment.");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
+export function createApiClient(baseUrl: string | undefined): ProtEvaApi {
+  return baseUrl?.trim() ? new HttpApiClient(baseUrl) : mockClient;
+}
+
+const baseUrl = import.meta.env["VITE_API_BASE_URL"] as string | undefined;
+
+export const mockClient = new MockApiClient();
+export const isDemoMode = !baseUrl?.trim();
+export const api: ProtEvaApi = createApiClient(baseUrl);

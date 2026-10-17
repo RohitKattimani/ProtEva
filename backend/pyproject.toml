@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proteva-api"
+version = "0.1.0"
+description = "ProtEva API foundation"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi==0.124.4",
+  "pydantic==2.12.5",
+  "pydantic-settings==2.11.0",
+  "uvicorn==0.38.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

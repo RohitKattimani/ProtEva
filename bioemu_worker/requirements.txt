@@ -1,0 +1,2 @@
+# Keep BioEmu and its CUDA dependencies outside backend/pyproject.toml.
+bioemu[cuda]==1.4.1
