@@ -162,18 +162,19 @@ export function CandidateDrawer({
           <Separator />
 
           <div>
-            <p className="mb-2 text-sm font-medium">Reference structure</p>
+            <p className="mb-2 text-sm font-medium">Candidate structure</p>
             <div className="structure-unavailable mb-2 grid place-items-center border border-dashed border-border bg-surface p-4 text-center">
               <div className="px-2">
                 <FlaskConical className="mx-auto size-5 text-muted-foreground" />
                 <p className="mt-2 text-xs text-muted-foreground">
-                  No predicted structure exists for this candidate. ProtEva never renders an
-                  invented protein model as a real candidate structure — a candidate model appears
-                  here only once genuine sampling artifacts are produced.
+                  No predicted candidate structure exists yet — ProtEva does not render an invented
+                  protein model as a real candidate. Until genuine sampling artifacts exist, the
+                  viewer below shows the experimental reference fold with this candidate's
+                  substituted positions marked.
                 </p>
               </div>
             </div>
-            <ReferenceViewer />
+            <ReferenceViewer mutations={candidate.mutations} />
           </div>
 
           <div>
@@ -425,16 +426,9 @@ export function CandidateDrawer({
                         </Button>
                       </div>
                     ))}
-                    {!procurementRequest?.options.length && (
-                      <p className="rounded border border-warning/30 bg-warning/5 p-2 text-xs text-muted-foreground">
-                        No verified supplier result was returned for this unique request. No
-                        configured supplier catalog can claim a match; use an official supplier
-                        route to request a custom quote.
-                      </p>
-                    )}
                     {searchResult.externalRoutes?.length > 0 && (
                       <div className="space-y-1">
-                        <p className="text-xs font-medium">External supplier routes</p>
+                        <p className="text-xs font-medium">Order directly from a supplier</p>
                         {searchResult.externalRoutes.map((route: any, index: number) => (
                           <a
                             key={index}
@@ -443,7 +437,7 @@ export function CandidateDrawer({
                             target="_blank"
                             rel="noreferrer"
                           >
-                            {route.supplier}: {route.note}
+                            {route.supplier} — {route.note}
                           </a>
                         ))}
                       </div>

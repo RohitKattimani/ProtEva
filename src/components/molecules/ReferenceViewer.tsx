@@ -1,4 +1,4 @@
-import { Loader2, RotateCcw, Sparkles } from "lucide-react";
+import { FlaskConical, Loader2, RotateCcw, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { GLViewer } from "3dmol";
@@ -19,7 +19,7 @@ import type { ReferenceStructure } from "@/lib/protein/types";
 
 type ThreeDmolModule = typeof import("3dmol");
 
-/** Resolve a semantic design token to an rgb() string usable by WebGL. */
+/** Resolve a semantic design token to a color string usable by WebGL (3Dmol). */
 function cssColor(name: string, fallback: string) {
   if (typeof window === "undefined" || typeof document === "undefined") return fallback;
   const probe = document.createElement("span");
@@ -28,10 +28,14 @@ function cssColor(name: string, fallback: string) {
   document.body.appendChild(probe);
   const resolved = getComputedStyle(probe).color;
   probe.remove();
-  return resolved && resolved !== "rgba(0, 0, 0, 0)" ? resolved : fallback;
+  if (!resolved || resolved === "rgba(0, 0, 0, 0)") return fallback;
+  // 3Dmol/WebGL cannot parse modern color spaces like oklch()/lab()/lch();
+  // fall back to a hand-tuned sRGB value in those cases.
+  if (/^(rgb|rgba|hsl|hsla|#)/i.test(resolved)) return resolved;
+  return fallback;
 }
 
-export function ReferenceViewer() {
+export function ReferenceViewer({ mutations = [] }: { mutations?: readonly string[] } = {}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<GLViewer | null>(null);
   const threeDmolRef = useRef<ThreeDmolModule | null>(null);
@@ -74,7 +78,9 @@ export function ReferenceViewer() {
     if (viewerRef.current || !containerRef.current) return viewerRef.current;
     const module = await import("3dmol");
     threeDmolRef.current = module;
-    const viewer = module.createViewer(containerRef.current, { backgroundColor: "transparent" });
+    const viewer = module.createViewer(containerRef.current, {
+      backgroundColor: cssColor("--color-surface", "#161b22"),
+    });
     viewerRef.current = viewer;
     return viewer;
   }, []);
@@ -82,6 +88,17 @@ export function ReferenceViewer() {
   const selected = useMemo(
     () => catalog?.find((reference) => reference.pdbId === selectedId) ?? null,
     [catalog, selectedId],
+  );
+
+  // Positions (reference numbering) of the candidate's substituted residues, e.g. "D54W" -> 54.
+  const mutationKey = mutations.join(",");
+  const mutationPositions = useMemo(
+    () =>
+      mutationKey
+        .split(",")
+        .map((mutation) => Number.parseInt(mutation.replace(/\D/g, ""), 10))
+        .filter((position) => Number.isFinite(position) && position > 0),
+    [mutationKey],
   );
 
   const fetchCoordinates = useCallback(
@@ -107,6 +124,7 @@ export function ReferenceViewer() {
         const targetColor = cssColor("--color-accent", "#4fd1c5");
         const partnerColor = cssColor("--color-primary", "#9f8cff");
         const motifColor = cssColor("--color-warning", "#e0b64d");
+        const mutationColor = cssColor("--color-destructive", "#e5675f");
         const surfaceColor = cssColor("--color-muted-foreground", "#8b8f9a");
 
         const primaryText = await fetchCoordinates(selectedId);
@@ -119,6 +137,14 @@ export function ReferenceViewer() {
           { resi: [7, 8, 9, 10, 11, 12, 13, 14, 15] },
           { stick: { color: motifColor, radius: 0.18 }, cartoon: { color: motifColor } },
         );
+
+        // Candidate substitutions, marked at their reference positions.
+        if (mutationPositions.length) {
+          viewer.addStyle(
+            { resi: mutationPositions },
+            { stick: { color: mutationColor, radius: 0.28 }, cartoon: { color: mutationColor } },
+          );
+        }
 
         if (withCompare) {
           const partner = (catalog ?? []).find((reference) => reference.pdbId !== selectedId);
@@ -145,16 +171,16 @@ export function ReferenceViewer() {
         setLoadingId(null);
       }
     },
-    [catalog, ensureViewer, fetchCoordinates, selectedId],
+    [catalog, ensureViewer, fetchCoordinates, selectedId, mutationPositions],
   );
 
   useEffect(() => {
     if (catalog?.length) {
       void load(compare, surface);
     }
-    // Re-render when the selection, overlay or surface changes.
+    // Re-render when the selection, overlay, surface or candidate mutations change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, compare, surface, catalog]);
+  }, [selectedId, compare, surface, catalog, mutationKey]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -260,9 +286,15 @@ export function ReferenceViewer() {
               <Loader2 className="mr-2 size-4 animate-spin" /> Loading {loadingId} coordinates…
             </div>
           )}
-          {!catalog?.length && !catalogError && (
+          {catalog === null && !catalogError && !loadingId && (
             <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
               <Loader2 className="mr-2 size-4 animate-spin" /> Loading reference catalog…
+            </div>
+          )}
+          {catalog !== null && catalog.length === 0 && !loadingId && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground">
+              <FlaskConical className="size-5" />
+              <span>No reference coordinates are available from the backend.</span>
             </div>
           )}
         </div>
@@ -276,6 +308,26 @@ export function ReferenceViewer() {
             <span className="sm:col-span-2">{selected.stateDescription}</span>
           </div>
         )}
+        <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block size-2 rounded-full bg-accent" /> primary chain (
+            {selected?.pdbId ?? "reference"})
+          </span>
+          {compare && (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block size-2 rounded-full bg-primary" /> comparison overlay
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block size-2 rounded-full bg-warning" /> protected P-loop motif
+          </span>
+          {mutationPositions.length > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block size-2 rounded-full bg-destructive" /> candidate
+              substitutions (positions {mutationPositions.join(", ")})
+            </span>
+          )}
+        </p>
         <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <Pill tone="muted">reference coordinates</Pill>
           These coordinates describe the experimental reference; they are not a computational

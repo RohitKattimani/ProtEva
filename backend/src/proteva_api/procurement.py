@@ -180,9 +180,26 @@ class ProcurementWorkflow:
 
     def external_routes(self) -> list[dict[str, str]]:
         return [
-            {"supplier": "Twist Bioscience", "url": "https://www.twistbioscience.com/", "note": "Account, IP whitelist, and API approval required."},
-            {"supplier": "IDT", "url": "https://www.idtdna.com/page/tools/scitools-plus-api-overview/", "note": "SciTools Plus API access requires an IDT account."},
-            {"supplier": "GenScript", "url": "https://www.genscript.com/quick_order_menu.html", "note": "Ordering services are account and region dependent."},
+            {
+                "supplier": "Twist Bioscience",
+                "url": "https://www.twistbioscience.com/products/gene-synthesis",
+                "note": "Gene synthesis (custom DNA sequences)",
+            },
+            {
+                "supplier": "IDT",
+                "url": "https://www.idtdna.com/pages/products/genes-and-gene-fragments/custom-gene-synthesis",
+                "note": "Custom gene synthesis",
+            },
+            {
+                "supplier": "GenScript",
+                "url": "https://www.genscript.com/gene-synthesis.html",
+                "note": "Gene synthesis",
+            },
+            {
+                "supplier": "Integrated DNA Technologies (IDT)",
+                "url": "https://www.idtdna.com/pages/products/custom-dna-rna/dna-oligos",
+                "note": "Oligonucleotides",
+            },
         ]
 
     def create_request(self, experiment_id: str, candidate_id: str, specification: ProcurementSpecification) -> ProcurementRequest:
