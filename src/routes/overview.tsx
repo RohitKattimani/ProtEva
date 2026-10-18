@@ -1,18 +1,10 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import {
-  AlertTriangle,
-  Activity,
-  ArrowRight,
-  Boxes,
-  FlaskConical,
-  Play,
-  ShieldAlert,
-} from "lucide-react";
+import { Activity, ArrowRight, Boxes, FlaskConical, Play, ShieldAlert } from "lucide-react";
 
 import { MolecularCanvas } from "@/components/app/MolecularCanvas";
 import { PageHeader } from "@/components/app/AppShell";
 import { DiversityChart, ObjectiveChart } from "@/components/app/Charts";
-import { Pill, StatusBadge } from "@/components/app/StatusBadge";
+import { StatusBadge } from "@/components/app/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -124,7 +116,19 @@ function Overview() {
       />
 
       <div className="research-focus">
-        <div><p className="eyebrow">CURRENT EXPLORATION / SIMULATED</p><h2>{featured?.name ?? "Conformational search"}</h2><p>{featured?.target.objectiveText ?? "Define a landscape to begin exploring."}</p><Button asChild variant="outline"><Link to="/experiments/$experimentId" params={{ experimentId: featured?.id ?? "EXP-1042" }}>Continue exploration <ArrowRight className="size-4" /></Link></Button></div>
+        <div>
+          <p className="eyebrow">CURRENT EXPLORATION / SIMULATED</p>
+          <h2>{featured?.name ?? "Conformational search"}</h2>
+          <p>{featured?.target.objectiveText ?? "Define a landscape to begin exploring."}</p>
+          <Button asChild variant="outline">
+            <Link
+              to="/experiments/$experimentId"
+              params={{ experimentId: featured?.id ?? "EXP-1042" }}
+            >
+              Continue exploration <ArrowRight className="size-4" />
+            </Link>
+          </Button>
+        </div>
         <MolecularCanvas compact />
       </div>
       <div className="summary-strip grid sm:grid-cols-2 xl:grid-cols-4">
@@ -169,11 +173,16 @@ function Overview() {
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Evolutionary search progress</CardTitle>
             <CardDescription>
-              Best and average objective score by generation — {featured?.id ?? "demo"} (illustrative)
+              Best and average objective score by generation — {featured?.id ?? "demo"}{" "}
+              (illustrative)
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {featured ? <ObjectiveChart data={featured.generationStats} /> : <Skeleton className="h-56" />}
+            {featured ? (
+              <ObjectiveChart data={featured.generationStats} />
+            ) : (
+              <Skeleton className="h-56" />
+            )}
           </CardContent>
         </Card>
 
@@ -183,7 +192,11 @@ function Overview() {
             <CardDescription>Mean pairwise sequence divergence (illustrative)</CardDescription>
           </CardHeader>
           <CardContent>
-            {featured ? <DiversityChart data={featured.generationStats} /> : <Skeleton className="h-44" />}
+            {featured ? (
+              <DiversityChart data={featured.generationStats} />
+            ) : (
+              <Skeleton className="h-44" />
+            )}
           </CardContent>
         </Card>
       </div>
@@ -261,14 +274,16 @@ function Overview() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Recent agent activity</CardTitle>
-            <CardDescription>Recorded messages and tool calls, not model reasoning</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {(events ?? []).slice(-5).reverse().map((event) => (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Recent agent activity</CardTitle>
+          <CardDescription>Recorded messages and tool calls, not model reasoning</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {(events ?? [])
+            .slice(-5)
+            .reverse()
+            .map((event) => (
               <div key={event.id} className="flex gap-3 border-l border-border pl-3">
                 <div className="min-w-0">
                   <p className="text-xs text-muted-foreground">
@@ -279,35 +294,11 @@ function Overview() {
                 </div>
               </div>
             ))}
-            {!events?.length && (
-              <p className="text-sm text-muted-foreground">No recorded agent events yet.</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Validation warnings</CardTitle>
-            <CardDescription>Frontend and simulated-audit checks</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {experiments?.flatMap((experiment) =>
-              experiment.warnings.map((warning) => (
-                <div
-                  key={`${experiment.id}-${warning}`}
-                  className="flex gap-2 rounded-md border border-warning/30 bg-warning/5 p-3"
-                >
-                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-                  <div className="min-w-0">
-                    <Pill tone="warning">{experiment.id}</Pill>
-                    <p className="mt-1 text-xs text-muted-foreground">{warning}</p>
-                  </div>
-                </div>
-              )),
-            )}
-          </CardContent>
-        </Card>
-      </div>
+          {!events?.length && (
+            <p className="text-sm text-muted-foreground">No recorded agent events yet.</p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
