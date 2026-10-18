@@ -16,6 +16,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppShell } from "@/components/app/AppShell";
 import { Toaster } from "@/components/ui/sonner";
 import { useDemoSync } from "@/lib/protein/hooks";
+import { AuthProvider } from "@/lib/protein/auth";
 
 
 function NotFoundComponent() {
@@ -142,9 +143,11 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <ShellWithSync />
-      <Toaster position="bottom-right" />
+      <AuthProvider>
+        {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+        <ShellWithSync />
+        <Toaster position="bottom-right" />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: proteva-api
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    plan: starter
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PROTEVA_ENV
+        value: production
+      - key: PROTEVA_DATABASE_PATH
+        value: /var/data/proteva.sqlite3
+      - key: PROTEVA_CORS_ORIGINS
+        sync: false
+      - key: PROTEVA_GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: PROTEVA_AUTH_SIGNING_SECRET
+        generateValue: true
+      - key: PROTEVA_GOOGLE_API_KEY
+        sync: false
+    disk:
+      name: proteva-data
+      mountPath: /var/data
+      sizeGB: 1

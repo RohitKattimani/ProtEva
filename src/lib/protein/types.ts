@@ -286,6 +286,19 @@ export interface ProcurementRequest {
   updatedAt: string;
 }
 
+export interface AuthenticatedUser {
+  id: string;
+  email: string;
+  name?: string | null;
+  picture?: string | null;
+}
+
+export interface AuthSession {
+  accessToken: string;
+  expiresAt: number;
+  user: AuthenticatedUser;
+}
+
 /** A prepared reference structure the live evaluator actually scores against. */
 export interface ReferenceStructure {
   pdbId: string;
@@ -337,6 +350,7 @@ export interface ProcurementPackage {
 }
 
 export interface ProtEvaApi {
+  signInWithGoogle?(credential: string): Promise<AuthSession>;
   createExperiment(draft: {
     input: SequenceInput;
     target: TargetLandscape;
