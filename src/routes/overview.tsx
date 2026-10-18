@@ -1,5 +1,5 @@
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Activity, ArrowRight, Boxes, FlaskConical, Play, ShieldAlert } from "lucide-react";
+import { Activity, ArrowRight, Boxes, FlaskConical, ShieldAlert } from "lucide-react";
 
 import { MolecularCanvas } from "@/components/app/MolecularCanvas";
 import { PageHeader } from "@/components/app/AppShell";
@@ -100,14 +100,9 @@ function Overview() {
     <div className="space-y-6">
       <PageHeader
         title="Research workbench"
-        description="AI-assisted conformational search and in-silico directed evolution. Every figure below is illustrative demonstration data."
+        description="AI-assisted conformational search and in-silico directed evolution."
         actions={
           <>
-            <Button variant="outline" asChild>
-              <Link to="/experiments/$experimentId" params={{ experimentId: "EXP-1042" }}>
-                <Play className="size-4" /> Explore demo run
-              </Link>
-            </Button>
             <Button onClick={() => navigate({ to: "/experiments/new" })}>
               <FlaskConical className="size-4" /> New experiment
             </Button>
@@ -123,7 +118,7 @@ function Overview() {
           <Button asChild variant="outline">
             <Link
               to="/experiments/$experimentId"
-              params={{ experimentId: featured?.id ?? "EXP-1042" }}
+              params={{ experimentId: featured?.id ?? experiments?.[0]?.id ?? "" }}
             >
               Continue exploration <ArrowRight className="size-4" />
             </Link>

@@ -224,7 +224,7 @@ export function AgentTimeline({ events }: { events: AgentEvent[] }) {
                       {Object.entries(event.payload).map(([key, value]) => (
                         <span
                           key={key}
-                          className="rounded border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                          className="rounded border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground max-w-full break-all"
                         >
                           {key}={typeof value === "object" ? JSON.stringify(value) : String(value)}
                         </span>
