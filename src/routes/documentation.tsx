@@ -15,7 +15,10 @@ export const Route = createFileRoute("/documentation")({
           "How the ProtEva pipeline divides work between agents, the genetic algorithm, structural sampling and deterministic evaluation.",
       },
       { property: "og:title", content: "Documentation · ProtEva" },
-      { property: "og:description", content: "Pipeline, metrics and limitations of the ProtEva workspace." },
+      {
+        property: "og:description",
+        content: "Pipeline, metrics and limitations of the ProtEva workspace.",
+      },
     ],
   }),
   component: Documentation,
@@ -34,11 +37,11 @@ const SECTIONS = [
   {
     title: "Metric definitions",
     body: [
-      "Target occupancy — fraction of sampled conformations satisfying the target-state definition.",
-      "Off-target occupancy — fraction matching the declared undesired reference state.",
-      "RMSD — root-mean-square deviation of backbone atoms against the reference structure, in Ångström.",
-      "Radius of gyration — compactness of the sampled conformation.",
-      "Uncertainty — spread of the occupancy estimate at the given sample count. Rankings inside this interval are not separable.",
+      "Target occupancy: fraction of sampled conformations satisfying the target-state definition.",
+      "Off-target occupancy: fraction matching the declared undesired reference state.",
+      "RMSD: root-mean-square deviation of backbone atoms against the reference structure, in Ångström.",
+      "Radius of gyration: compactness of the sampled conformation.",
+      "Uncertainty: spread of the occupancy estimate at the given sample count. Rankings inside this interval are not separable.",
     ],
   },
   {

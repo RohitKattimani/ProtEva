@@ -117,7 +117,7 @@ function Overview() {
 
       <div className="research-focus">
         <div>
-          <p className="eyebrow">CURRENT EXPLORATION / SIMULATED</p>
+          <p className="eyebrow">CURRENT EXPLORATION / CONTINUE</p>
           <h2>{featured?.name ?? "Conformational search"}</h2>
           <p>{featured?.target.objectiveText ?? "Define a landscape to begin exploring."}</p>
           <Button asChild variant="outline">

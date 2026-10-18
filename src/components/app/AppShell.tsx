@@ -10,15 +10,13 @@ import {
   PanelLeftOpen,
   Plus,
   Search,
-  Settings,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ProteinMark } from "./ProteinMark";
 import { Input } from "@/components/ui/input";
-import {
-} from "@/components/ui/dropdown-menu";
+import {} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -28,7 +26,6 @@ const NAV = [
   { to: "/candidates", label: "Candidate Library", icon: Boxes },
   { to: "/agents", label: "Agent Activity", icon: Cpu },
   { to: "/documentation", label: "Documentation", icon: FileText },
-  { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
 function Breadcrumbs() {
@@ -67,7 +64,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       )}
     >
       <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
-        <Link to="/" aria-label="ProtEva home" className="shrink-0 text-accent"><ProteinMark className="size-7" /></Link>
+        <Link to="/" aria-label="ProtEva home" className="shrink-0 text-accent">
+          <ProteinMark className="size-7" />
+        </Link>
         {!collapsed && (
           <div className="min-w-0">
             <p className="truncate font-display text-lg font-medium">ProtEva</p>
@@ -79,7 +78,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       <nav className="flex-1 space-y-1 overflow-y-auto p-2">
         {NAV.map((item) => {
           const path: string = item.to;
-          const active = path === "/experiments" ? pathname === path || (pathname.startsWith(path + "/") && pathname !== "/experiments/new") : pathname === path;
+          const active =
+            path === "/experiments"
+              ? pathname === path ||
+                (pathname.startsWith(path + "/") && pathname !== "/experiments/new")
+              : pathname === path;
           const Icon = item.icon;
           return (
             <Link

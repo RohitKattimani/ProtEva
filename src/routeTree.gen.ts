@@ -14,7 +14,6 @@ import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as CandidatesRouteImport } from './routes/candidates'
 import { Route as DocumentationRouteImport } from './routes/documentation'
 import { Route as OverviewRouteImport } from './routes/overview'
-import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ExperimentsIndexRouteImport } from './routes/experiments.index'
 import { Route as ExperimentsExperimentIdRouteImport } from './routes/experiments.$experimentId'
 import { Route as ExperimentsNewRouteImport } from './routes/experiments.new'
@@ -44,11 +43,6 @@ const OverviewRoute = OverviewRouteImport.update({
   path: '/overview',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ExperimentsIndexRoute = ExperimentsIndexRouteImport.update({
   id: '/experiments/',
   path: '/experiments/',
@@ -71,7 +65,6 @@ export interface FileRoutesByFullPath {
   '/candidates': typeof CandidatesRoute
   '/documentation': typeof DocumentationRoute
   '/overview': typeof OverviewRoute
-  '/settings': typeof SettingsRoute
   '/experiments/$experimentId': typeof ExperimentsExperimentIdRoute
   '/experiments/new': typeof ExperimentsNewRoute
   '/experiments/': typeof ExperimentsIndexRoute
@@ -82,7 +75,6 @@ export interface FileRoutesByTo {
   '/candidates': typeof CandidatesRoute
   '/documentation': typeof DocumentationRoute
   '/overview': typeof OverviewRoute
-  '/settings': typeof SettingsRoute
   '/experiments/$experimentId': typeof ExperimentsExperimentIdRoute
   '/experiments/new': typeof ExperimentsNewRoute
   '/experiments': typeof ExperimentsIndexRoute
@@ -94,7 +86,6 @@ export interface FileRoutesById {
   '/candidates': typeof CandidatesRoute
   '/documentation': typeof DocumentationRoute
   '/overview': typeof OverviewRoute
-  '/settings': typeof SettingsRoute
   '/experiments/$experimentId': typeof ExperimentsExperimentIdRoute
   '/experiments/new': typeof ExperimentsNewRoute
   '/experiments/': typeof ExperimentsIndexRoute
@@ -107,7 +98,6 @@ export interface FileRouteTypes {
     | '/candidates'
     | '/documentation'
     | '/overview'
-    | '/settings'
     | '/experiments/$experimentId'
     | '/experiments/new'
     | '/experiments/'
@@ -118,7 +108,6 @@ export interface FileRouteTypes {
     | '/candidates'
     | '/documentation'
     | '/overview'
-    | '/settings'
     | '/experiments/$experimentId'
     | '/experiments/new'
     | '/experiments'
@@ -129,7 +118,6 @@ export interface FileRouteTypes {
     | '/candidates'
     | '/documentation'
     | '/overview'
-    | '/settings'
     | '/experiments/$experimentId'
     | '/experiments/new'
     | '/experiments/'
@@ -141,7 +129,6 @@ export interface RootRouteChildren {
   CandidatesRoute: typeof CandidatesRoute
   DocumentationRoute: typeof DocumentationRoute
   OverviewRoute: typeof OverviewRoute
-  SettingsRoute: typeof SettingsRoute
   ExperimentsExperimentIdRoute: typeof ExperimentsExperimentIdRoute
   ExperimentsNewRoute: typeof ExperimentsNewRoute
   ExperimentsIndexRoute: typeof ExperimentsIndexRoute
@@ -184,13 +171,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OverviewRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/experiments/': {
       id: '/experiments/'
       path: '/experiments'
@@ -221,7 +201,6 @@ const rootRouteChildren: RootRouteChildren = {
   CandidatesRoute: CandidatesRoute,
   DocumentationRoute: DocumentationRoute,
   OverviewRoute: OverviewRoute,
-  SettingsRoute: SettingsRoute,
   ExperimentsExperimentIdRoute: ExperimentsExperimentIdRoute,
   ExperimentsNewRoute: ExperimentsNewRoute,
   ExperimentsIndexRoute: ExperimentsIndexRoute,
