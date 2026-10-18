@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     env: str = "development"
     database_path: str = "./proteva-dev.sqlite3"
     google_api_key: Optional[str] = None
+    cors_origins: str = ""
     gemma_model: str = "gemma-4-26b-a4b-it"
     gemma_fallback_model: Optional[str] = "gemma-4-31b-it"
     proteinmpnn_python: str = ""
@@ -26,6 +27,9 @@ class Settings(BaseSettings):
         if value not in {"development", "test", "production"}:
             raise ValueError("PROTEVA_ENV must be development, test, or production")
         return value
+
+    def configured_cors_origins(self) -> list[str]:
+        return [origin.strip().rstrip("/") for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 @lru_cache

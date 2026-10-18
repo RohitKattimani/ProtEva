@@ -24,7 +24,13 @@ repository = SQLiteExperimentRepository(settings.database_path)
 workflow = LiveWorkflow(repository, settings)
 procurement = ProcurementWorkflow(repository, settings)
 app = FastAPI(title="ProtEva API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?", allow_methods=["GET","POST"], allow_headers=["content-type"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.configured_cors_origins(),
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_methods=["GET", "POST"],
+    allow_headers=["content-type", "authorization"],
+)
 router = APIRouter(prefix="/api/v1")
 
 
