@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
@@ -16,7 +15,6 @@ from .procurement import ProcurementWorkflow
 from .repository import SQLiteExperimentRepository
 from .schemas import ApiError, ExecutionMode, Experiment, ExperimentCreate, ExperimentStatus, ProcurementRequest, ProcurementRequestCreate, ProcurementSpecification
 from .settings import get_settings
-from .auth import AuthService, AuthenticationError
 from .live import LiveWorkflow, start_workflow
 from .annotations import REFERENCE_IDS, REFERENCE_METADATA, load_reference, protected_motif_descriptor, reference_file
 from .config_contract import apply_derived_view
@@ -25,41 +23,8 @@ settings = get_settings()
 repository = SQLiteExperimentRepository(settings.database_path)
 workflow = LiveWorkflow(repository, settings)
 procurement = ProcurementWorkflow(repository, settings)
-auth = AuthService(settings)
 app = FastAPI(title="ProtEva API", version="0.1.0")
-class ProductionAuthenticationMiddleware(BaseHTTPMiddleware):
-    """Protect every product API route in production, apart from health and sign-in."""
-
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path.rstrip("/") or "/"
-        public_paths = {"/api/v1/health", "/api/v1/ready", "/api/v1/auth/config", "/api/v1/auth/google"}
-        if request.method != "OPTIONS" and settings.env == "production" and path.startswith("/api/v1/") and path not in public_paths:
-            if not auth.enabled:
-                return JSONResponse(status_code=503, content={"error": {"code": "AUTH_NOT_CONFIGURED", "message": "Production authentication is not configured."}})
-            try:
-                request.state.user = auth.verify_bearer_header(request.headers.get("authorization"))
-            except AuthenticationError as error:
-                return JSONResponse(status_code=401, content={"error": {"code": "AUTHENTICATION_REQUIRED", "message": str(error)}})
-        return await call_next(request)
-
-
-app.add_middleware(ProductionAuthenticationMiddleware)
-# FastAPI applies middleware in reverse registration order. Keep CORS outermost
-# so the browser receives CORS headers when authentication rejects a request.
-if settings.env == "production":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.configured_cors_origins(),
-        allow_methods=["GET", "POST"],
-        allow_headers=["content-type", "authorization"],
-    )
-else:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
-        allow_methods=["GET", "POST"],
-        allow_headers=["content-type", "authorization"],
-    )
+app.add_middleware(CORSMiddleware, allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?", allow_methods=["GET","POST"], allow_headers=["content-type"])
 router = APIRouter(prefix="/api/v1")
 
 
@@ -100,27 +65,6 @@ def ready():
     # Verify the configured persistence adapter can be queried.
     repository.list()
     return {"status": "ready", "persistence": "available"}
-
-
-@router.get("/auth/config")
-def auth_config():
-    """Return only the public OAuth client ID; never return server secrets."""
-    return auth.configuration()
-
-
-@router.post("/auth/google")
-async def sign_in_with_google(request: Request):
-    try:
-        body = await request.json()
-    except Exception as error:
-        raise HTTPException(status_code=422, detail="A JSON Google credential is required") from error
-    credential = body.get("credential") if isinstance(body, dict) else None
-    try:
-        user = auth.verify_google_credential(credential)
-        token, expires_at = auth.issue_access_token(user)
-    except AuthenticationError as error:
-        raise HTTPException(status_code=401, detail=str(error)) from error
-    return {"accessToken": token, "expiresAt": expires_at, "user": user.public()}
 
 
 @router.post("/experiments", response_model=Experiment, status_code=201)

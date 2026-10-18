@@ -10,7 +10,6 @@ import {
 } from "./mock-data";
 import type {
   AgentEvent,
-  AuthSession,
   AgentId,
   Artifact,
   Candidate,
@@ -49,12 +48,6 @@ const ROLE_TO_AGENT: Record<string, AgentId> = {
 };
 
 type Listener = () => void;
-
-let accessToken: string | null = null;
-
-export function setAccessToken(token: string | null) {
-  accessToken = token;
-}
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -324,9 +317,8 @@ export class HttpApiClient implements ProtEvaApi {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const headers = new Headers(init?.headers ?? {});
+    const headers = new Headers(init?.headers);
     headers.set("content-type", "application/json");
-    if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
       headers,
@@ -405,12 +397,6 @@ export class HttpApiClient implements ProtEvaApi {
       body: JSON.stringify({ ...draft, executionMode: draft.executionMode ?? "demo" }),
     });
     return this.experiment(raw);
-  }
-  async signInWithGoogle(credential: string): Promise<AuthSession> {
-    return this.request<AuthSession>("/auth/google", {
-      method: "POST",
-      body: JSON.stringify({ credential }),
-    });
   }
   async listExperiments() {
     return (await this.request<any[]>("/experiments")).map((item) => this.experiment(item));
@@ -543,11 +529,7 @@ export class HttpApiClient implements ProtEvaApi {
   }
   async downloadArtifact(experimentId: string, artifactId: string) {
     const path = `/experiments/${encodeURIComponent(experimentId)}/artifacts/${encodeURIComponent(artifactId)}/download`;
-    const headers = new Headers();
-    if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      headers,
-    });
+    const response = await fetch(`${this.baseUrl}${path}`);
     if (!response.ok) throw await ApiClientError.fromResponse(response, path);
     return response.blob();
   }
@@ -556,11 +538,7 @@ export class HttpApiClient implements ProtEvaApi {
   }
   async getReferenceCoordinates(pdbId: string) {
     const path = `/references/${encodeURIComponent(pdbId)}/coordinates`;
-    const headers = new Headers();
-    if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      headers,
-    });
+    const response = await fetch(`${this.baseUrl}${path}`);
     if (!response.ok) throw await ApiClientError.fromResponse(response, path);
     return response.text();
   }

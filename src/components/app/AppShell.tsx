@@ -18,7 +18,6 @@ import { ProteinMark } from "./ProteinMark";
 import { Input } from "@/components/ui/input";
 import {} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { GoogleSignInButton, useAuth } from "@/lib/protein/auth";
 
 const NAV = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
@@ -56,7 +55,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { session, signOut } = useAuth();
 
   const sidebar = (
     <div
@@ -160,11 +158,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                 className="h-8 w-44 bg-surface pl-8 text-xs lg:w-64"
               />
             </div>
-            {session ? (
-              <Button variant="ghost" size="sm" onClick={signOut} className="text-xs text-muted-foreground">
-                Sign out
-              </Button>
-            ) : <GoogleSignInButton width={180} />}
           </div>
         </header>
 

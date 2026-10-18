@@ -21,7 +21,6 @@ import { ObjectiveChart } from "./Charts";
 import { isDemoMode } from "@/lib/protein/api";
 import { useExperimentEvents, useExperiments } from "@/lib/protein/hooks";
 import { actorLabel } from "@/lib/protein/format";
-import { GoogleSignInButton } from "@/lib/protein/auth";
 
 const steps = [
   {
@@ -105,7 +104,6 @@ export function LandingPage() {
           ProtEva
         </Link>
         <nav className="public-links">{nav}</nav>
-        <GoogleSignInButton width={190} />
         <Button asChild className="launch-button">
           <Link to="/overview">
             Launch ProtEva <ArrowUpRight className="size-4" />
