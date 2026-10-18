@@ -105,6 +105,16 @@ def get_events(experiment_id: str):
     return repository.events(experiment_id)
 
 
+@router.get("/candidates", response_model=list)
+def list_candidates():
+    """List every persisted candidate across all experiments.
+
+    The candidate library uses this for its "all experiments" scope; per-experiment
+    views keep using the scoped route below. Only real persisted records are returned.
+    """
+    return repository.all_candidates()
+
+
 @router.get("/experiments/{experiment_id}/candidates", response_model=list)
 def get_candidates(experiment_id: str):
     if repository.get(experiment_id) is None: raise HTTPException(status_code=404, detail="Experiment not found")

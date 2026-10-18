@@ -122,7 +122,7 @@ export interface Candidate {
   objectiveScore: number | null;
   evaluationStatus: EvaluationStatus;
   auditStatus: AuditStatus;
-  diversityScore: number;
+  diversityScore: number | null;
   metrics: StructuralMetrics | null;
   warnings: string[];
   targetMeanNll?: number | null;

@@ -83,6 +83,11 @@ class SQLiteExperimentRepository:
             rows = connection.execute("SELECT body FROM candidates WHERE experiment_id = ? ORDER BY id", (experiment_id,)).fetchall()
         return [Candidate.model_validate_json(row["body"]) for row in rows]
 
+    def all_candidates(self) -> list[Candidate]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT body FROM candidates ORDER BY experiment_id, id").fetchall()
+        return [Candidate.model_validate_json(row["body"]) for row in rows]
+
     def candidate(self, experiment_id: str, candidate_id: str) -> Optional[Candidate]:
         with self._connect() as connection:
             row = connection.execute("SELECT body FROM candidates WHERE experiment_id = ? AND id = ?", (experiment_id, candidate_id)).fetchone()

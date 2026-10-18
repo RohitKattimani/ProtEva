@@ -360,7 +360,8 @@ export class HttpApiClient implements ProtEvaApi {
       objectiveScore: raw.targetPreference ?? null,
       evaluationStatus: raw.targetPreference == null ? "pending" : "evaluated",
       auditStatus: reviewed ? "confirmed" : "unreviewed",
-      diversityScore: 0,
+      // Live screening does not compute a diversity metric; null renders as "not recorded".
+      diversityScore: null,
       metrics: null,
       warnings: raw.audit?.warning ? [String(raw.audit.warning)] : [],
     } as Candidate;
@@ -409,15 +410,10 @@ export class HttpApiClient implements ProtEvaApi {
     );
   }
   async getCandidates(query: CandidateQuery = {}) {
-    if (!query.experimentId)
-      throw new ApiClientError({
-        message: "Live candidate retrieval requires an experimentId.",
-        path: "/experiments/{id}/candidates",
-        status: 400,
-      });
-    const candidates = (
-      await this.request<any[]>(`/experiments/${encodeURIComponent(query.experimentId)}/candidates`)
-    ).map((item) => this.candidate(item));
+    const path = query.experimentId
+      ? `/experiments/${encodeURIComponent(query.experimentId)}/candidates`
+      : "/candidates";
+    const candidates = (await this.request<any[]>(path)).map((item) => this.candidate(item));
     return candidates.filter(
       (item) =>
         (query.generation == null || item.generation === query.generation) &&

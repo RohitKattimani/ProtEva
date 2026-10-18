@@ -133,3 +133,30 @@ def test_completed_with_warnings_cannot_be_cancelled(repository):
     with pytest.raises(HTTPException) as error:
         main.cancel_experiment(experiment.id)
     assert error.value.status_code == 409
+
+
+def test_global_candidate_listing_spans_experiments(repository):
+    from proteva_api.schemas import Candidate
+
+    experiments = [main.create_experiment(ExperimentCreate.model_validate(PAYLOAD)) for _ in range(2)]
+    repository.add_candidates(
+        [
+            Candidate(
+                id=f"cand-g000-{index:04d}",
+                experimentId=experiment.id,
+                sequence="AC",
+                generation=0,
+                mutations=[],
+            )
+            for index, experiment in enumerate(experiments)
+        ]
+    )
+    listed = main.list_candidates()
+    assert {candidate.experiment_id for candidate in listed} == {
+        experiment.id for experiment in experiments
+    }
+    assert len(listed) == 2
+    first_experiment = next(
+        candidate for candidate in listed if candidate.experiment_id == experiments[0].id
+    )
+    assert main.get_candidates(experiments[0].id) == [first_experiment]
